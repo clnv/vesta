@@ -1,0 +1,36 @@
+server:
+  listen: ":8080"
+  external_url: "http://localhost:8080"
+
+auth:
+  # Development mode skips OIDC. Never enable it on an exposed deployment.
+  dev_mode: true
+  dev_user:
+    subject: "local-developer"
+    email: "developer@localhost"
+    name: "Local developer"
+    roles: ["dev"]
+  session_secret_env: "VESTA_SESSION_SECRET"
+  session_ttl: "1h"
+
+limits:
+  query_timeout: "30s"
+  max_rows: 50000
+  max_bytes: 33554432
+  max_queries_per_user: 4
+  max_tails_per_user: 2
+  max_line_bytes: 8388608
+
+sources:
+  - id: "local"
+    name: "Local VictoriaLogs"
+    url: "http://localhost:9428"
+    roles: ["dev"]
+    tenants:
+      - account_id: "0"
+        project_id: "0"
+        name: "default"
+    auth:
+      type: "none"
+    hidden_fields: []
+

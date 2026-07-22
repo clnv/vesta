@@ -1,0 +1,41 @@
+server:
+  listen: ":8080"
+  external_url: "https://logs.example.com"
+
+auth:
+  dev_mode: false
+  issuer_url: "https://identity.example.com"
+  client_id: "vesta"
+  client_secret_env: "VESTA_OIDC_CLIENT_SECRET"
+  redirect_url: "https://logs.example.com/auth/callback"
+  scopes: ["openid", "profile", "email", "groups"]
+  groups_claim: "groups"
+  group_role_map:
+    "platform-oncall": ["prod-reader", "staging-reader"]
+    "application-developers": ["staging-reader"]
+  session_secret_env: "VESTA_SESSION_SECRET"
+  session_ttl: "1h"
+
+limits:
+  query_timeout: "30s"
+  max_rows: 50000
+  max_bytes: 33554432
+  max_queries_per_user: 4
+  max_tails_per_user: 2
+  max_line_bytes: 8388608
+
+sources:
+  - id: "production"
+    name: "Production"
+    url: "https://vmauth.example.com"
+    roles: ["prod-reader"]
+    tenants:
+      - account_id: "12"
+        project_id: "34"
+        name: "payments"
+        roles: ["prod-reader"]
+    auth:
+      type: "bearer"
+      token_env: "VESTA_PRODUCTION_TOKEN"
+    hidden_fields: ["password*", "authorization", "session_token"]
+

@@ -1,0 +1,189 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflow-lint:
+    name: GitHub Actions lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Lint workflow files and embedded shell
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+  backend:
+    name: Go test and validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify module checksums
+        run: go mod verify
+      - name: Check Go formatting
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l cmd internal)"
+          if [[ -n "$unformatted" ]]; then
+            echo "The following files require gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: Run go vet
+        run: go vet ./...
+      - name: Run race-enabled tests with coverage
+        run: go test -race -shuffle=on -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Upload Go coverage
+        if: always() && hashFiles('coverage.out') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: go-coverage
+          path: coverage.out
+          if-no-files-found: error
+          retention-days: 14
+
+  govulncheck:
+    name: Go vulnerability scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Scan reachable Go vulnerabilities
+        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+        with:
+          go-version-input: "1.26.0"
+          go-package: ./...
+
+  frontend:
+    name: Frontend test and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Run frontend tests
+        run: npm test
+      - name: Type-check and build production assets
+        run: npm run build
+      - name: Upload embedded UI assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: web-dist
+          path: internal/webui/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  helm:
+    name: Helm lint, render, and package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Helm
+        uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.3
+      - name: Lint default and production values
+        run: make helm-lint
+      - name: Render default deployment
+        run: helm template vesta ./charts/vesta --namespace vesta > /tmp/vesta-default.yaml
+      - name: Render production deployment
+        run: helm template vesta ./charts/vesta --namespace vesta --values ./charts/vesta/values-production.example.yaml > /tmp/vesta-production.yaml
+      - name: Render optional resources and chart-managed Secret
+        run: >-
+          helm template features ./charts/vesta
+          --set secret.create=true
+          --set-string secret.data.VESTA_SESSION_SECRET=test-only
+          --set autoscaling.enabled=true
+          --set ingress.enabled=true
+          --set podDisruptionBudget.enabled=true
+          > /tmp/vesta-features.yaml
+      - name: Render existing ConfigMap and Secret integration
+        run: >-
+          helm template existing ./charts/vesta
+          --set config.existingConfigMap=vesta-config
+          --set secret.existingSecret=vesta-secret
+          --set serviceAccount.create=false
+          --set serviceAccount.name=vesta-runtime
+          > /tmp/vesta-existing.yaml
+      - name: Package chart
+        run: |
+          mkdir -p dist
+          helm package ./charts/vesta --destination dist
+      - name: Upload Helm chart
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: helm-chart
+          path: dist/*.tgz
+          if-no-files-found: error
+          retention-days: 14
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          deny-licenses: AGPL-1.0-only, AGPL-3.0-only
+
+  integration:
+    name: Container and VictoriaLogs integration
+    needs:
+      - workflow-lint
+      - backend
+      - frontend
+      - helm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Dockerfile with BuildKit
+        run: docker build --check .
+      - name: Run pinned VictoriaLogs integration suite
+        run: make integration-test
+      - name: Verify final image user
+        shell: bash
+        run: |
+          image_user="$(docker image inspect vesta:local --format '{{.Config.User}}')"
+          if [[ "$image_user" != "10001:10001" ]]; then
+            echo "Expected image user 10001:10001, got $image_user"
+            exit 1
+          fi

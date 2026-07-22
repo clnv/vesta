@@ -1,0 +1,23 @@
+services:
+  victorialogs:
+    image: victoriametrics/victoria-logs:v1.52.0
+    command:
+      - -storageDataPath=/victoria-logs-data
+      - -retentionPeriod=1d
+    ports:
+      - "19428:9428"
+    volumes:
+      - victoria-logs-data:/victoria-logs-data
+
+  vesta:
+    image: vesta:local
+    build: .
+    depends_on:
+      - victorialogs
+    ports:
+      - "18080:8080"
+    volumes:
+      - ./config.compose.yml:/etc/vesta/config.yml:ro
+
+volumes:
+  victoria-logs-data:

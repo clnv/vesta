@@ -1,0 +1,7 @@
+.git
+node_modules
+web/node_modules
+web/tsconfig.tsbuildinfo
+coverage
+config.local.yml
+vesta

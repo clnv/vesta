@@ -1,0 +1,36 @@
+server:
+  listen: ":8080"
+  external_url: "http://localhost:18080"
+
+auth:
+  dev_mode: true
+  dev_user:
+    subject: "integration-test"
+    email: "integration@localhost"
+    name: "Integration test"
+    roles: ["reader"]
+  session_ttl: "1h"
+
+limits:
+  query_timeout: "30s"
+  max_rows: 50000
+  max_bytes: 33554432
+  max_queries_per_user: 4
+  max_tails_per_user: 2
+  max_line_bytes: 8388608
+
+sources:
+  - id: "integration"
+    name: "Pinned VictoriaLogs"
+    url: "http://victorialogs:9428"
+    roles: ["reader"]
+    tenants:
+      - account_id: "12"
+        project_id: "34"
+        name: "payments"
+      - account_id: "56"
+        project_id: "78"
+        name: "search"
+    auth:
+      type: "none"
+    hidden_fields: ["password*"]
