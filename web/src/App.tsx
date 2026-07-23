@@ -1,6 +1,6 @@
 import {
   Braces, ChevronDown, CircleStop, Copy, Download, FileJson, History, LogOut,
-  Moon, Play, Radio, Rows3, Share2, Sun, Table2, TerminalSquare, X,
+  Moon, Play, Radio, Share2, Sun, Table2, TerminalSquare, X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { QueryEditor, type QueryEditorHandle } from "./components/QueryEditor";
@@ -8,7 +8,7 @@ import { ResultViewer } from "./components/ResultViewer";
 import { Sidebar } from "./components/Sidebar";
 import { TabBar } from "./components/TabBar";
 import { APIError, fetchFields, getSession, streamQuery } from "./lib/api";
-import { clipboardRows, formatRows } from "./lib/format";
+import { clipboardRows, formatRows, shareBundle } from "./lib/format";
 import { DEFAULT_QUERY, hasTimeFilter, insertFilter, quoteLogSQLValue } from "./lib/logsql";
 import { appendToRing } from "./lib/ring";
 import { clearHistory as clearStoredHistory, loadWorkspace, saveWorkspace } from "./lib/storage";
@@ -19,7 +19,7 @@ type Theme = "light" | "dark";
 type SessionState = { kind: "loading" } | { kind: "signed-out" } | { kind: "ready"; session: Session } | { kind: "error"; message: string };
 
 function runtimeTab(tab: PersistedTab): ExplorerTab {
-  return { ...tab, status: "idle", rows: [], droppedRows: 0 };
+  return { ...tab, resultMode: tab.resultMode === "json" ? "json" : "table", status: "idle", rows: [], droppedRows: 0 };
 }
 
 function newTab(session: Session, title = "New query"): ExplorerTab {
@@ -31,7 +31,7 @@ function newTab(session: Session, title = "New query"): ExplorerTab {
     tenant: source?.tenants[0] ?? { accountId: "", projectId: "", name: "No tenant" },
     query: DEFAULT_QUERY,
     lastExecutedQuery: "",
-    resultMode: "log",
+    resultMode: "table",
     status: "idle",
     rows: [],
     droppedRows: 0,
@@ -347,6 +347,28 @@ export default function App() {
     }
   };
 
+  const copyRichText = async (text: string, html: string, message: string) => {
+    try {
+      if (typeof ClipboardItem === "undefined" || typeof navigator.clipboard.write !== "function") {
+        await navigator.clipboard.writeText(text);
+        setToast(`${message} as Markdown`);
+        return;
+      }
+      await navigator.clipboard.write([new ClipboardItem({
+        "text/plain": new Blob([text], { type: "text/plain" }),
+        "text/html": new Blob([html], { type: "text/html" }),
+      })]);
+      setToast(message);
+    } catch {
+      try {
+        await navigator.clipboard.writeText(text);
+        setToast(`${message} as Markdown`);
+      } catch {
+        setToast("Clipboard access was denied by the browser.");
+      }
+    }
+  };
+
   const copyQuery = () => {
     if (!activeTab) return;
     void copyText(editorRef.current?.executableQuery() ?? activeTab.query, "Query copied");
@@ -366,6 +388,32 @@ export default function App() {
     const link = shareURL(payload);
     if (link.length > MAX_SHARE_URL_LENGTH) setToast("This query is too large for a reliable link. Use Copy query instead.");
     else void copyText(link, "Protected query link copied");
+    setShareOpen(false);
+  };
+
+  const copyQueryLinkAndResults = () => {
+    if (!activeTab || !session || activeTab.rows.length === 0) return;
+    const query = activeTab.lastExecutedQuery || activeTab.query;
+    const payload: SharePayload = {
+      v: 1,
+      query,
+      sourceId: activeTab.sourceId,
+      tenant: activeTab.tenant,
+      title: activeTab.title,
+      resultMode: activeTab.resultMode,
+    };
+    const link = shareURL(payload);
+    if (link.length > MAX_SHARE_URL_LENGTH) {
+      setToast("This query is too large for a reliable link. Use the individual copy actions instead.");
+    } else {
+      const bundle = shareBundle({
+        query,
+        link,
+        rows: activeTab.rows,
+        mode: activeTab.resultMode,
+      });
+      void copyRichText(bundle.text, bundle.html, bundle.truncated ? "Rich query, link, and result excerpt copied" : "Rich query, link, and results copied");
+    }
     setShareOpen(false);
   };
 
@@ -468,6 +516,7 @@ export default function App() {
             <div className="menu-wrap">
               <button className="toolbar-button" onClick={() => { setShareOpen(!shareOpen); setExportOpen(false); }}><Share2 size={15} /> Share <ChevronDown size={13} /></button>
               {shareOpen && <div className="popover-menu">
+                <button onClick={copyQueryLinkAndResults} disabled={activeTab.rows.length === 0}><Copy size={15} /><span><strong>Copy query, link &amp; results</strong><small>Rich HTML · Markdown fallback</small></span></button>
                 <button onClick={copyQuery}><TerminalSquare size={15} /><span><strong>Copy query</strong><small>Selected text or full editor</small></span></button>
                 <button onClick={copyLink}><Share2 size={15} /><span><strong>Copy protected link</strong><small>Opens without running</small></span></button>
                 <button onClick={copyResults} disabled={activeTab.rows.length === 0}><Copy size={15} /><span><strong>Copy results</strong><small>TSV or NDJSON · max 5 MiB</small></span></button>
@@ -500,7 +549,6 @@ export default function App() {
           <div className="results-panel">
             <div className="results-header">
               <div className="result-tabs" role="tablist" aria-label="Result view">
-                <button className={activeTab.resultMode === "log" ? "active" : ""} onClick={() => updateTab(activeTab.id, { resultMode: "log" })}><Rows3 size={14} /> Log</button>
                 <button className={activeTab.resultMode === "table" ? "active" : ""} onClick={() => updateTab(activeTab.id, { resultMode: "table" })}><Table2 size={14} /> Table</button>
                 <button className={activeTab.resultMode === "json" ? "active" : ""} onClick={() => updateTab(activeTab.id, { resultMode: "json" })}><Braces size={14} /> JSON</button>
               </div>

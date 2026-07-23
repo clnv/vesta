@@ -4,16 +4,24 @@ Vesta is a self-hosted, keyboard-first LogsQL explorer for VictoriaLogs. It keep
 
 ## Run locally
 
-Requirements: Go 1.26.5+, Node.js 24+, Just 1.57+, and a VictoriaLogs server on `localhost:9428`.
+Requirements: Go 1.26.5+, Node.js 24+, Just 1.57+, Docker with Compose, and Zellij.
 
 ```sh
 cp config.example.yml config.local.yml
 npm install
-npm run build
-go run ./cmd/api -config config.local.yml
+just dev
 ```
 
-For web development, run `npm run dev` in a second terminal and open `http://localhost:5173`; Vite proxies API and authentication requests to the API on port 8080. To run the production web gateway instead, use `go run ./cmd/web` and open `http://localhost:8081`.
+`just dev` starts VictoriaLogs and the continuous fake-log generator only when needed, leaving running Compose containers untouched. It replaces the `vesta` Zellij session so the API, Vite, and log viewer restart each time. Zellij contains a two-pane `dev` tab for the API and Vite plus a `services` tab that follows the Compose logs. Open `http://localhost:5173`; Vite proxies API and authentication requests to the API on port 8080. Use a query such as `_time:5m` to inspect the generated local logs.
+
+The development Compose stack is defined in [`build/dev/compose.yml`](build/dev/compose.yml). Manage its lifecycle separately:
+
+```sh
+just dev-services-restart  # Force-recreate VictoriaLogs and the generator.
+just dev-services-destroy  # Remove the stack and its local VictoriaLogs data.
+```
+
+To run the production web gateway instead, use `go run ./cmd/web` and open `http://localhost:8081`.
 
 Development authentication is intentionally explicit in `config.local.yml`. Never expose a deployment with `dev_mode: true`.
 
