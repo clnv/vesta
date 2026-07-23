@@ -48,3 +48,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "vesta.secretName" -}}
 {{- default (include "vesta.fullname" .) .Values.secret.existingSecret }}
 {{- end }}
+
+{{- define "vesta.persistentVolumeClaimName" -}}
+{{- default (include "vesta.fullname" .) .Values.persistence.existingClaim }}
+{{- end }}

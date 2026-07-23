@@ -1,30 +1,11 @@
 import { expect, it } from "vitest";
-import { decodeShare, encodeShare, shareURL } from "./share";
-import type { SharePayload } from "../types";
+import { privateShareURL, shareTokenFromHash } from "./share";
 
-it("round trips a versioned share fragment", () => {
-  const payload: SharePayload = {
-    v: 1,
-    query: "_time:1h error | limit 20",
-    sourceId: "prod",
-    tenant: { accountId: "12", projectId: "34", name: "payments" },
-    title: "Errors",
-    resultMode: "table",
-  };
-  const encoded = encodeShare(payload);
-  expect(decodeShare(encoded)).toEqual(payload);
-  expect(shareURL(payload, { origin: "https://logs.example.com", pathname: "/" })).toContain("#share=");
-});
+it("builds and reads an opaque private share URL", () => {
+  const token = "abcdefghijklmnopqrstuvwx12345678";
+  const url = privateShareURL(token, { origin: "https://logs.example.com", pathname: "/" });
+  const hash = new URL(url).hash;
 
-it("migrates legacy log shares to the merged table view", () => {
-  const legacy = {
-    v: 1,
-    query: "_time:1h",
-    sourceId: "prod",
-    tenant: { accountId: "12", projectId: "34", name: "payments" },
-    title: "Legacy logs",
-    resultMode: "log",
-  } as unknown as SharePayload;
-
-  expect(decodeShare(encodeShare(legacy))?.resultMode).toBe("table");
+  expect(shareTokenFromHash(hash)).toBe(token);
+  expect(shareTokenFromHash("#share=client-encoded-query")).toBeNull();
 });

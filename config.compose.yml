@@ -3,13 +3,18 @@ server:
   external_url: "http://localhost:18080"
 
 auth:
-  dev_mode: true
-  dev_user:
-    subject: "integration-test"
+  session_secret_env: "VESTA_SESSION_SECRET"
+  session_ttl: "1h"
+  bootstrap:
     email: "integration@localhost"
     name: "Integration test"
+    password_env: "VESTA_BOOTSTRAP_PASSWORD"
+    team: "integration"
     roles: ["reader"]
-  session_ttl: "1h"
+
+storage:
+  path: "/var/lib/vesta/vesta.db"
+  share_ttl: "168h"
 
 limits:
   query_timeout: "30s"

@@ -14,6 +14,7 @@ import (
 	"github.com/vesta-explorer/vesta/internal/auth"
 	"github.com/vesta-explorer/vesta/internal/config"
 	"github.com/vesta-explorer/vesta/internal/server"
+	"github.com/vesta-explorer/vesta/internal/storage"
 	"github.com/vesta-explorer/vesta/internal/victoria"
 )
 
@@ -28,13 +29,29 @@ func main() {
 		os.Exit(1)
 	}
 
-	authenticator, err := auth.New(context.Background(), cfg, logger)
+	store, err := storage.Open(cfg.Storage.Path)
 	if err != nil {
-		logger.Error("initialize authentication", "error", err)
+		logger.Error("initialize storage", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			logger.Error("close storage", "error", err)
+		}
+	}()
+	if err := store.EnsureBootstrapAdmin(context.Background(), storage.BootstrapUser{
+		Email:    cfg.Auth.Bootstrap.Email,
+		Name:     cfg.Auth.Bootstrap.Name,
+		Password: cfg.BootstrapPassword(),
+		Team:     cfg.Auth.Bootstrap.Team,
+		Roles:    cfg.Auth.Bootstrap.Roles,
+	}); err != nil {
+		logger.Error("initialize bootstrap administrator", "error", err)
 		os.Exit(1)
 	}
 
-	handler := server.New(cfg, authenticator, victoria.NewClient(), logger)
+	authenticator := auth.New(cfg, store, logger)
+	handler := server.New(cfg, authenticator, store, victoria.NewClient(), logger)
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,
 		Handler:           handler,
@@ -53,7 +70,7 @@ func main() {
 		}
 	}()
 
-	logger.Info("Vesta API listening", "address", cfg.Server.Listen, "sources", len(cfg.Sources), "dev_auth", cfg.Auth.DevMode)
+	logger.Info("Vesta API listening", "address", cfg.Server.Listen, "sources", len(cfg.Sources))
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("serve", "error", err)
 		os.Exit(1)

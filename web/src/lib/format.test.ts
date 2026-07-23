@@ -1,5 +1,16 @@
 import { expect, it } from "vitest";
-import { highlightLogSQL, shareBundle } from "./format";
+import { formatRows, highlightLogSQL, shareBundle } from "./format";
+
+it("uses an explicit column order for table exports", () => {
+  const csv = formatRows(
+    [{ _time: "2026-07-23T00:00:00Z", _msg: "hello", level: "info" }],
+    "table",
+    "csv",
+    ["_time", "level", "_msg"],
+  );
+
+  expect(csv.split("\n")[0]).toBe("_time,level,_msg");
+});
 
 it("combines connection context, protected link, query, and results for sharing", () => {
   const bundle = shareBundle({

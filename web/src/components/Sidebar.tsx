@@ -1,20 +1,23 @@
-import { Ban, Check, Clock3, Database, Eraser, ListFilter, RefreshCw, Search } from "lucide-react";
+import { Ban, Check, Clock3, Database, Eraser, Folder, ListFilter, Plus, RefreshCw, Search, UsersRound } from "lucide-react";
 import { useMemo, useState } from "react";
-import type { FieldValue, HistoryEntry } from "../types";
+import type { FieldValue, HistoryEntry, TeamLibrary, TeamQuery } from "../types";
 
 interface Props {
-  mode: "fields" | "history";
-  onMode(mode: "fields" | "history"): void;
+  mode: "fields" | "history" | "shared";
+  onMode(mode: "fields" | "history" | "shared"): void;
   fields: FieldValue[];
   values: FieldValue[];
   selectedField?: string;
   loading: boolean;
   history: HistoryEntry[];
+  teamLibraries: TeamLibrary[];
   canInspect: boolean;
   onRefresh(): void;
   onField(field: string): void;
   onInsert(field: string, value: string, exclude: boolean): void;
   onRecall(entry: HistoryEntry): void;
+  onRecallTeamQuery(entry: TeamQuery): void;
+  onCreateFolder(teamId: string): void;
   onClearHistory(): void;
 }
 
@@ -27,6 +30,7 @@ export function Sidebar(props: Props) {
       <div className="sidebar-switcher" role="tablist" aria-label="Explorer sidebar">
         <button className={props.mode === "fields" ? "active" : ""} onClick={() => props.onMode("fields")}><ListFilter size={15} /> Fields</button>
         <button className={props.mode === "history" ? "active" : ""} onClick={() => props.onMode("history")}><Clock3 size={15} /> History</button>
+        <button className={props.mode === "shared" ? "active" : ""} onClick={() => props.onMode("shared")}><UsersRound size={15} /> Shared</button>
       </div>
       {props.mode === "fields" ? (
         <>
@@ -54,7 +58,7 @@ export function Sidebar(props: Props) {
             ))}
           </div>
         </>
-      ) : (
+      ) : props.mode === "history" ? (
         <>
           <div className="sidebar-title-row">
             <div><span className="eyebrow">LOCAL ONLY</span><h2>Query history</h2></div>
@@ -70,8 +74,38 @@ export function Sidebar(props: Props) {
             ))}
           </div>
         </>
+      ) : (
+        <>
+          <div className="sidebar-title-row">
+            <div><span className="eyebrow">SQLITE LIBRARY</span><h2>Team queries</h2></div>
+          </div>
+          <div className="team-library-list">
+            {props.teamLibraries.length === 0 && <div className="sidebar-note"><UsersRound size={17} /> Join a team to save and browse shared queries.</div>}
+            {props.teamLibraries.map((library) => (
+              <section className="team-library" key={library.team.id}>
+                <header><strong>{library.team.name}</strong><button aria-label={`Create folder in ${library.team.name}`} onClick={() => props.onCreateFolder(library.team.id)}><Plus size={13} /></button></header>
+                {library.queries.map((item) => <TeamQueryButton item={item} onRecall={props.onRecallTeamQuery} key={item.id} />)}
+                {library.folders.map((folder) => (
+                  <div className="team-folder" key={folder.id}>
+                    <span><Folder size={12} /> {folder.name}</span>
+                    {folder.queries.length === 0 && <small>Empty folder</small>}
+                    {folder.queries.map((item) => <TeamQueryButton item={item} onRecall={props.onRecallTeamQuery} key={item.id} />)}
+                  </div>
+                ))}
+              </section>
+            ))}
+          </div>
+        </>
       )}
     </aside>
   );
 }
 
+function TeamQueryButton({ item, onRecall }: { item: TeamQuery; onRecall(item: TeamQuery): void }) {
+  return (
+    <button className="team-query-item" onClick={() => onRecall(item)}>
+      <strong>{item.title}</strong>
+      <code>{item.query}</code>
+    </button>
+  );
+}

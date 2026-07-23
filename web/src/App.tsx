@@ -1,19 +1,28 @@
 import {
-  Braces, ChevronDown, CircleStop, Copy, Download, FileJson, History, LogOut,
-  Moon, Play, Radio, Share2, Sun, Table2, TerminalSquare, X,
+  Braces, ChevronDown, CircleStop, Copy, Download, FileJson, History, KeyRound, LogOut,
+  Moon, Play, Radio, Share2, Sun, Table2, TerminalSquare, Users, X,
 } from "lucide-react";
+import type { FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AdminPanel } from "./components/AdminPanel";
+import { PasswordPanel } from "./components/PasswordPanel";
 import { QueryEditor, type QueryEditorHandle } from "./components/QueryEditor";
 import { ResultViewer } from "./components/ResultViewer";
 import { Sidebar } from "./components/Sidebar";
 import { TabBar } from "./components/TabBar";
-import { APIError, fetchFields, getSession, streamQuery } from "./lib/api";
+import {
+  APIError, createShare, createTeamFolder, createTeamQuery, fetchFields, getSession,
+  getTeamLibrary, login, openShare, streamQuery,
+} from "./lib/api";
 import { clipboardRows, formatRows, shareBundle } from "./lib/format";
-import { DEFAULT_QUERY, hasTimeFilter, insertFilter, quoteLogSQLValue } from "./lib/logsql";
+import { columnsFromQuery, DEFAULT_QUERY, hasTimeFilter, insertFilter, quoteLogSQLValue } from "./lib/logsql";
 import { appendToRing } from "./lib/ring";
 import { clearHistory as clearStoredHistory, loadWorkspace, saveWorkspace } from "./lib/storage";
-import { decodeShare, MAX_SHARE_URL_LENGTH, sharedTabId, shareURL } from "./lib/share";
-import type { ExplorerTab, FieldValue, HistoryEntry, PersistedTab, RunStatus, Session, SharePayload, StreamEvent, Tenant } from "./types";
+import { privateShareURL, sharedTabId, shareTokenFromHash } from "./lib/share";
+import type {
+  ExplorerTab, FieldValue, HistoryEntry, PersistedTab, RunStatus, Session, ShareAudience,
+  SharePayload, StreamEvent, TeamLibrary, TeamQuery, Tenant,
+} from "./types";
 
 type Theme = "light" | "dark";
 type SessionState = { kind: "loading" } | { kind: "signed-out" } | { kind: "ready"; session: Session } | { kind: "error"; message: string };
@@ -68,12 +77,18 @@ export default function App() {
   const [activeId, setActiveId] = useState("");
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
   const [workspaceReady, setWorkspaceReady] = useState(false);
-  const [sidebarMode, setSidebarMode] = useState<"fields" | "history">("fields");
+  const [sidebarMode, setSidebarMode] = useState<"fields" | "history" | "shared">("fields");
   const [fields, setFields] = useState<FieldValue[]>([]);
   const [values, setValues] = useState<FieldValue[]>([]);
   const [selectedField, setSelectedField] = useState("");
   const [metadataLoading, setMetadataLoading] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [shareAudience, setShareAudience] = useState<ShareAudience["type"]>("user");
+  const [shareTarget, setShareTarget] = useState("");
+  const [shareFolder, setShareFolder] = useState("");
+  const [teamLibraries, setTeamLibraries] = useState<TeamLibrary[]>([]);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [passwordOpen, setPasswordOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("vesta-theme") as Theme) || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
@@ -97,6 +112,7 @@ export default function App() {
     void (async () => {
       try {
         const currentSession = await getSession();
+        const libraries = await getTeamLibrary();
         const restored = await loadWorkspace();
         let restoredTabs = restored.tabs.map((tab) => {
           const runtime = runtimeTab(tab);
@@ -104,7 +120,15 @@ export default function App() {
             ? runtime
             : { ...runtime, contextError: "This saved source or tenant is no longer authorized." };
         });
-        const shared = decodeShare(window.location.hash);
+        let shared: SharePayload | null = null;
+        const privateToken = shareTokenFromHash(window.location.hash);
+        if (privateToken) {
+          try {
+            shared = (await openShare(privateToken, currentSession.csrfToken)).payload;
+          } catch (error) {
+            setToast(error instanceof Error ? error.message : "This private share could not be opened");
+          }
+        }
         if (shared) {
           const sharedId = sharedTabId(window.location.hash);
           const sharedTab: ExplorerTab = {
@@ -133,6 +157,8 @@ export default function App() {
         }
         setTabs(restoredTabs);
         setHistoryEntries(restored.history.filter((entry) => isContextAllowed(currentSession, entry.sourceId, entry.tenant)).slice(0, 100));
+        setTeamLibraries(libraries);
+        setShareTarget(currentSession.user.email);
         setSessionState({ kind: "ready", session: currentSession });
         setWorkspaceReady(true);
       } catch (error) {
@@ -375,58 +401,63 @@ export default function App() {
     setShareOpen(false);
   };
 
-  const copyLink = () => {
-    if (!activeTab) return;
+  const createProtectedLink = async (query: string): Promise<string | null> => {
+    if (!activeTab || !session) return null;
+    const teams = session.user.teams ?? [];
+    const target = shareAudience === "team" ? shareTarget || teams[0]?.id || "" : shareTarget.trim() || session.user.email;
+    if (!target) {
+      setToast(shareAudience === "team" ? "Choose one of your teams first." : "Enter a user email or subject.");
+      return null;
+    }
     const payload: SharePayload = {
-      v: 1,
-      query: editorRef.current?.executableQuery() ?? activeTab.query,
-      sourceId: activeTab.sourceId,
-      tenant: activeTab.tenant,
-      title: activeTab.title,
-      resultMode: activeTab.resultMode,
-    };
-    const link = shareURL(payload);
-    if (link.length > MAX_SHARE_URL_LENGTH) setToast("This query is too large for a reliable link. Use Copy query instead.");
-    else void copyText(link, "Protected query link copied");
-    setShareOpen(false);
-  };
-
-  const copyQueryLinkAndResults = () => {
-    if (!activeTab || !session || activeTab.rows.length === 0) return;
-    const query = activeTab.lastExecutedQuery || activeTab.query;
-    const payload: SharePayload = {
-      v: 1,
       query,
       sourceId: activeTab.sourceId,
       tenant: activeTab.tenant,
       title: activeTab.title,
       resultMode: activeTab.resultMode,
     };
-    const link = shareURL(payload);
-    if (link.length > MAX_SHARE_URL_LENGTH) {
-      setToast("This query is too large for a reliable link. Use the individual copy actions instead.");
-    } else {
+    try {
+      const result = await createShare(payload, { type: shareAudience, value: target }, session.csrfToken);
+      return privateShareURL(result.token);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Private link could not be created");
+      return null;
+    }
+  };
+
+  const copyLink = async () => {
+    if (!activeTab) return;
+    const link = await createProtectedLink(editorRef.current?.executableQuery() ?? activeTab.query);
+    if (link) await copyText(link, `Private link for ${shareAudience === "team" ? "team" : "user"} copied`);
+    setShareOpen(false);
+  };
+
+  const copyQueryLinkAndResults = async () => {
+    if (!activeTab || !session || activeTab.rows.length === 0) return;
+    const query = activeTab.lastExecutedQuery || activeTab.query;
+    const link = await createProtectedLink(query);
+    if (link) {
       const bundle = shareBundle({
         query,
         link,
         rows: activeTab.rows,
         mode: activeTab.resultMode,
       });
-      void copyRichText(bundle.text, bundle.html, bundle.truncated ? "Rich query, link, and result excerpt copied" : "Rich query, link, and results copied");
+      await copyRichText(bundle.text, bundle.html, bundle.truncated ? "Rich query, link, and result excerpt copied" : "Rich query, link, and results copied");
     }
     setShareOpen(false);
   };
 
   const copyResults = () => {
     if (!activeTab || activeTab.rows.length === 0) return;
-    const result = clipboardRows(activeTab.rows, activeTab.resultMode);
+    const result = clipboardRows(activeTab.rows, activeTab.resultMode, columnsFromQuery(activeTab.lastExecutedQuery || activeTab.query));
     void copyText(result.text, result.truncated ? "Result excerpt copied (5 MiB clipboard limit)" : "Results copied");
     setShareOpen(false);
   };
 
   const download = (format: "csv" | "ndjson") => {
     if (!activeTab || activeTab.rows.length === 0) return;
-    const text = formatRows(activeTab.rows, activeTab.resultMode, format);
+    const text = formatRows(activeTab.rows, activeTab.resultMode, format, columnsFromQuery(activeTab.lastExecutedQuery || activeTab.query));
     const url = URL.createObjectURL(new Blob([text], { type: format === "csv" ? "text/csv" : "application/x-ndjson" }));
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -449,16 +480,86 @@ export default function App() {
     setToast("Local query history cleared");
   };
 
-  const beginLogin = () => {
-    if (window.location.hash) sessionStorage.setItem("vesta:return-hash", window.location.hash);
-    window.location.assign("/auth/login");
+  const refreshTeamLibrary = async () => {
+    try {
+      setTeamLibraries(await getTeamLibrary());
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Team queries could not be loaded");
+    }
+  };
+
+  const refreshAccountData = async () => {
+    try {
+      const [currentSession, libraries] = await Promise.all([getSession(), getTeamLibrary()]);
+      setSessionState({ kind: "ready", session: currentSession });
+      setTeamLibraries(libraries);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Account data could not be refreshed");
+    }
+  };
+
+  const createFolder = async (teamId: string) => {
+    if (!session) return;
+    const name = window.prompt("Folder name");
+    if (!name?.trim()) return;
+    try {
+      await createTeamFolder(teamId, name, session.csrfToken);
+      await refreshTeamLibrary();
+      setToast("Team folder created");
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Team folder could not be created");
+    }
+  };
+
+  const recallTeamQuery = (item: TeamQuery) => {
+    if (!activeTab || !session) return;
+    const tenant = { accountId: item.tenantAccountId, projectId: item.tenantProjectId, name: item.tenantName };
+    if (!isContextAllowed(session, item.sourceId, tenant)) {
+      setToast("You are not authorized for this query’s source or tenant.");
+      return;
+    }
+    updateTab(activeTab.id, {
+      title: item.title,
+      query: item.query,
+      sourceId: item.sourceId,
+      tenant,
+      resultMode: item.resultMode,
+      protected: true,
+      contextError: undefined,
+    });
+    setSidebarMode("fields");
+    editorRef.current?.focus();
+  };
+
+  const saveToTeamLibrary = async () => {
+    if (!activeTab || !session) return;
+    const teamId = shareTarget || session.user.teams[0]?.id || "";
+    if (!teamId) {
+      setToast("Choose a team first.");
+      return;
+    }
+    const payload: SharePayload = {
+      query: editorRef.current?.executableQuery() ?? activeTab.query,
+      sourceId: activeTab.sourceId,
+      tenant: activeTab.tenant,
+      title: activeTab.title,
+      resultMode: activeTab.resultMode,
+    };
+    try {
+      await createTeamQuery(teamId, shareFolder, payload, session.csrfToken);
+      await refreshTeamLibrary();
+      setToast("Query saved to the team library");
+      setShareOpen(false);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Team query could not be saved");
+    }
   };
 
   const activeSource = useMemo(() => session?.sources.find((source) => source.id === activeTab?.sourceId), [activeTab?.sourceId, session]);
   const fieldsForEditor = fields.map((field) => field.value);
 
   if (sessionState.kind === "loading") return <Splash />;
-  if (sessionState.kind === "signed-out") return <SignIn onLogin={beginLogin} />;
+  if (sessionState.kind === "signed-out") return <SignIn />;
   if (sessionState.kind === "error") return <FatalError message={sessionState.message} />;
   if (!activeTab || !session) return <Splash />;
 
@@ -472,6 +573,8 @@ export default function App() {
         <div className="header-context"><span className="connection-pulse" />{activeSource?.name ?? "Unavailable source"}<span>/</span>{activeTab.tenant.name}</div>
         <div className="header-actions">
           <button className="icon-button" aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>{theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}</button>
+          <button className="icon-button" aria-label="Change password" onClick={() => setPasswordOpen(true)}><KeyRound size={16} /></button>
+          {session.user.isAdmin && <button className="icon-button" aria-label="Manage users and teams" onClick={() => setAdminOpen(true)}><Users size={16} /></button>}
           <div className="identity"><span>{session.user.name || session.user.email}</span><small>{session.user.email}</small></div>
           <a className="icon-button" aria-label="Sign out" href="/auth/logout"><LogOut size={16} /></a>
         </div>
@@ -496,11 +599,14 @@ export default function App() {
           selectedField={selectedField}
           loading={metadataLoading}
           history={historyEntries}
+          teamLibraries={teamLibraries}
           canInspect={hasTimeFilter(activeTab.query) && !Boolean(activeTab.contextError)}
           onRefresh={() => void refreshFields()}
           onField={(field) => void openField(field)}
           onInsert={(field, value, exclude) => updateTab(activeTab.id, { query: insertFilter(activeTab.query, `${exclude ? "-" : ""}${field}:=${quoteLogSQLValue(value)}`) })}
           onRecall={recall}
+          onRecallTeamQuery={recallTeamQuery}
+          onCreateFolder={(teamId) => void createFolder(teamId)}
           onClearHistory={clearHistory}
         />
 
@@ -516,9 +622,32 @@ export default function App() {
             <div className="menu-wrap">
               <button className="toolbar-button" onClick={() => { setShareOpen(!shareOpen); setExportOpen(false); }}><Share2 size={15} /> Share <ChevronDown size={13} /></button>
               {shareOpen && <div className="popover-menu">
-                <button onClick={copyQueryLinkAndResults} disabled={activeTab.rows.length === 0}><Copy size={15} /><span><strong>Copy query, link &amp; results</strong><small>Rich HTML · Markdown fallback</small></span></button>
+                <div className="share-audience">
+                  <label>
+                    <span>SHARE WITH</span>
+                    <select value={shareAudience} onChange={(event) => {
+                      const type = event.target.value as ShareAudience["type"];
+                      setShareAudience(type);
+                      setShareTarget(type === "team" ? (session.user.teams ?? [])[0]?.id ?? "" : session.user.email);
+                      setShareFolder("");
+                    }}>
+                      <option value="user">User</option>
+                      <option value="team" disabled={(session.user.teams ?? []).length === 0}>Team</option>
+                    </select>
+                  </label>
+                  {shareAudience === "user"
+                    ? <input aria-label="Share recipient" value={shareTarget} onChange={(event) => setShareTarget(event.target.value)} placeholder="email or subject" />
+                    : <select aria-label="Share team" value={shareTarget} onChange={(event) => { setShareTarget(event.target.value); setShareFolder(""); }}>{(session.user.teams ?? []).map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select>}
+                  {shareAudience === "team" && <select className="team-folder-select" aria-label="Team folder" value={shareFolder} onChange={(event) => setShareFolder(event.target.value)}>
+                    <option value="">No folder</option>
+                    {(teamLibraries.find((library) => library.team.id === shareTarget)?.folders ?? []).map((folder) => <option value={folder.id} key={folder.id}>{folder.name}</option>)}
+                  </select>}
+                  <small>Login is required. The recipient’s log access is checked again.</small>
+                </div>
+                {shareAudience === "team" && <button onClick={() => void saveToTeamLibrary()}><Users size={15} /><span><strong>Save to team library</strong><small>Visible to team members · grouped by folder</small></span></button>}
+                <button onClick={() => void copyLink()}><Share2 size={15} /><span><strong>Copy private link</strong><small>Opaque ID · expires automatically</small></span></button>
+                <button onClick={() => void copyQueryLinkAndResults()} disabled={activeTab.rows.length === 0}><Copy size={15} /><span><strong>Copy query, private link &amp; results</strong><small>Rich HTML · Markdown fallback</small></span></button>
                 <button onClick={copyQuery}><TerminalSquare size={15} /><span><strong>Copy query</strong><small>Selected text or full editor</small></span></button>
-                <button onClick={copyLink}><Share2 size={15} /><span><strong>Copy protected link</strong><small>Opens without running</small></span></button>
                 <button onClick={copyResults} disabled={activeTab.rows.length === 0}><Copy size={15} /><span><strong>Copy results</strong><small>TSV or NDJSON · max 5 MiB</small></span></button>
               </div>}
             </div>
@@ -563,12 +692,19 @@ export default function App() {
             {activeTab.warning && <div className="warning-banner">{activeTab.warning}</div>}
             {activeTab.status === "truncated" && <div className="warning-banner"><strong>Result truncated.</strong> {activeTab.stats?.reason}</div>}
             {activeTab.error && <div className="error-banner"><X size={15} /><span>{activeTab.error}</span></div>}
-            <ResultViewer rows={activeTab.rows} mode={activeTab.resultMode} onCopy={(value) => void copyText(value, "Value copied")} />
+            <ResultViewer
+              rows={activeTab.rows}
+              mode={activeTab.resultMode}
+              query={activeTab.lastExecutedQuery || activeTab.query}
+              onCopy={(value) => void copyText(value, "Value copied")}
+            />
           </div>
         </section>
       </main>
       <div className="screenreader-status" aria-live="polite">{toast}</div>
       {toast && <div className="toast"><span>{toast}</span></div>}
+      {adminOpen && <AdminPanel csrfToken={session.csrfToken} onClose={() => setAdminOpen(false)} onChanged={() => void refreshAccountData()} onMessage={setToast} />}
+      {passwordOpen && <PasswordPanel csrfToken={session.csrfToken} onClose={() => setPasswordOpen(false)} onMessage={setToast} />}
     </div>
   );
 }
@@ -577,8 +713,41 @@ function Splash() {
   return <div className="center-screen"><div className="brand-mark large"><span /><span /><span /></div><h1>Vesta</h1><p>Opening your LogsQL workspace…</p><div className="loading-line"><i /></div></div>;
 }
 
-function SignIn({ onLogin }: { onLogin(): void }) {
-  return <div className="center-screen signin"><div className="brand-mark large"><span /><span /><span /></div><span className="eyebrow">VICTORIALOGS EXPLORER</span><h1>Your logs, queried as written.</h1><p>Vesta keeps time and result semantics inside LogsQL—where they are visible, reviewable, and shareable.</p><button className="primary-button large-button" onClick={onLogin}><Play size={16} /> Sign in with your organization</button><small>Shared links open as protected drafts and never auto-run.</small></div>;
+function SignIn() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setMessage("");
+    try {
+      if (window.location.hash) sessionStorage.setItem("vesta:return-hash", window.location.hash);
+      await login(email, password);
+      window.location.reload();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Sign in failed");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="center-screen signin">
+      <div className="brand-mark large"><span /><span /><span /></div>
+      <span className="eyebrow">VICTORIALOGS EXPLORER</span>
+      <h1>Your logs, queried as written.</h1>
+      <p>Sign in with the local account stored in this Vesta instance.</p>
+      <form className="signin-form" onSubmit={(event) => void submit(event)}>
+        <label><span>Email</span><input required autoComplete="username" type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></label>
+        <label><span>Password</span><input required autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+        {message && <div className="signin-error">{message}</div>}
+        <button className="primary-button large-button" disabled={busy}><Play size={16} /> {busy ? "Signing in…" : "Sign in"}</button>
+      </form>
+      <small>Users, passwords, teams, folders, and shared queries are stored in SQLite.</small>
+    </div>
+  );
 }
 
 function FatalError({ message }: { message: string }) {

@@ -27,6 +27,38 @@ it("uses the same explicit width for the table header and virtualized rows", () 
   expect(header?.style.gridTemplateColumns).toBe("34px minmax(150px, 1fr) minmax(150px, 1fr) minmax(150px, 1fr)");
 });
 
+it("orders table headers by the query fields stage and appends unexpected fields", () => {
+  const { container } = render(
+    <ResultViewer
+      mode="table"
+      query={"_time:1h\n| sort by (_time) desc\n| fields _time, level, _msg"}
+      onCopy={vi.fn()}
+      rows={[{ trace_id: "abc", _msg: "hello", level: "info", _time: "0" }]}
+    />,
+  );
+
+  expect([...container.querySelectorAll(".table-header-cell > span")].map((header) => header.textContent))
+    .toEqual(["_time", "level", "_msg", "trace_id"]);
+});
+
+it("highlights entire error and warning rows", () => {
+  const { container } = render(
+    <ResultViewer
+      mode="table"
+      onCopy={vi.fn()}
+      rows={[
+        { level: "ERROR", _msg: "failed" },
+        { level: "warning", _msg: "slow" },
+        { level: "info", _msg: "ready" },
+      ]}
+    />,
+  );
+  const rows = container.querySelectorAll(".table-row");
+  expect(rows[0]).toHaveClass("level-error");
+  expect(rows[1]).toHaveClass("level-warn");
+  expect(rows[2]).not.toHaveClass("level-error", "level-warn");
+});
+
 it("resizes a table column with its accessible header handle", () => {
   const { container } = render(
     <ResultViewer mode="table" onCopy={vi.fn()} rows={[{ _time: "0", _msg: "hello" }]} />,
