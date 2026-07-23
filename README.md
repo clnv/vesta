@@ -42,7 +42,7 @@ Generate a session secret with:
 openssl rand -base64 32
 ```
 
-Passwords are hashed with bcrypt before storage. Administrators can create users and teams and assign memberships from the user-directory button in the header. Vesta supports `none`, `basic`, and `bearer` authentication for an administrator-configured VictoriaLogs upstream. Upstream URLs and credentials are never returned to the browser. Configure TLS at the ingress and keep VictoriaLogs or vmauth on a trusted network.
+Passwords are hashed with bcrypt before storage. Administrators can open `/admin/access` from the header to create and suspend users, manage teams, assign configured roles, and inspect the read-only source and tenant permission policy. Vesta supports `none`, `basic`, and `bearer` authentication for an administrator-configured VictoriaLogs upstream. Upstream URLs and credentials are never returned to the browser. Configure TLS at the ingress and keep VictoriaLogs or vmauth on a trusted network.
 
 ## Query behavior
 

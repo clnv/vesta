@@ -1,6 +1,7 @@
 import type {
-  Directory, DirectoryUser, FieldValue, Session, ShareAudience, SharePayload,
+  Directory, DirectoryUser, FieldValue, PermissionCatalog, Session, ShareAudience, SharePayload,
   Team, TeamFolder, TeamLibrary, TeamQuery, StreamEvent, Tenant,
+  UpdateDirectoryUserInput,
 } from "../types";
 
 export class APIError extends Error {
@@ -43,6 +44,17 @@ async function postJSON<T>(path: string, body: unknown, csrfToken: string): Prom
   return response.json() as Promise<T>;
 }
 
+async function putJSON<T>(path: string, body: unknown, csrfToken: string): Promise<T> {
+  const response = await fetch(path, {
+    method: "PUT",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new APIError(await parseError(response), response.status);
+  return response.json() as Promise<T>;
+}
+
 export async function createShare(payload: SharePayload, audience: ShareAudience, csrfToken: string): Promise<{ token: string; expiresAt: number }> {
   return postJSON("/api/v1/shares", { payload, audience }, csrfToken);
 }
@@ -72,6 +84,20 @@ export async function getDirectory(): Promise<Directory> {
   return response.json() as Promise<Directory>;
 }
 
+export async function getPermissionCatalog(): Promise<PermissionCatalog> {
+  const response = await fetch("/api/v1/admin/permissions", { credentials: "same-origin" });
+  if (!response.ok) throw new APIError(await parseError(response), response.status);
+  const catalog = await response.json() as PermissionCatalog;
+  return {
+    roles: catalog.roles ?? [],
+    sources: (catalog.sources ?? []).map((source) => ({
+      ...source,
+      roles: source.roles ?? [],
+      tenants: (source.tenants ?? []).map((tenant) => ({ ...tenant, roles: tenant.roles ?? [] })),
+    })),
+  };
+}
+
 export async function createDirectoryUser(
   input: { email: string; name: string; password: string; roles: string[]; isAdmin: boolean },
   csrfToken: string,
@@ -79,13 +105,35 @@ export async function createDirectoryUser(
   return postJSON("/api/v1/admin/users", input, csrfToken);
 }
 
+export async function updateDirectoryUser(
+  id: string,
+  input: UpdateDirectoryUserInput,
+  csrfToken: string,
+): Promise<DirectoryUser> {
+  return putJSON(`/api/v1/admin/users/${encodeURIComponent(id)}`, input, csrfToken);
+}
+
 export async function createDirectoryTeam(name: string, csrfToken: string): Promise<Team> {
   return postJSON("/api/v1/admin/teams", { name }, csrfToken);
+}
+
+export async function updateDirectoryTeam(id: string, name: string, csrfToken: string): Promise<Team> {
+  return putJSON(`/api/v1/admin/teams/${encodeURIComponent(id)}`, { name }, csrfToken);
 }
 
 export async function addDirectoryMembership(userId: string, teamId: string, csrfToken: string): Promise<void> {
   const response = await fetch("/api/v1/admin/memberships", {
     method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: JSON.stringify({ userId, teamId }),
+  });
+  if (!response.ok) throw new APIError(await parseError(response), response.status);
+}
+
+export async function removeDirectoryMembership(userId: string, teamId: string, csrfToken: string): Promise<void> {
+  const response = await fetch("/api/v1/admin/memberships", {
+    method: "DELETE",
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
     body: JSON.stringify({ userId, teamId }),

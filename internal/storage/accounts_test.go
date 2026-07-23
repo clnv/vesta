@@ -93,3 +93,118 @@ func TestAccountValidationAndMembershipBoundaries(t *testing.T) {
 		t.Fatalf("non-member folder error = %v", err)
 	}
 }
+
+func TestUpdateUserAndTeamManagement(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+
+	if err := store.EnsureBootstrapAdmin(ctx, BootstrapUser{
+		Email: "admin@example.test", Name: "Admin", Password: "correct-horse-battery",
+		Team: "Platform", Roles: []string{"reader"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	admin, err := store.Authenticate(ctx, "admin@example.test", "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err := store.CreateUser(ctx, CreateUserInput{
+		Email: "member@example.test", Name: "Member", Password: "another-secure-password",
+		Roles: []string{"legacy"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	team, err := store.CreateTeam(ctx, "On call")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := store.UpdateUser(ctx, member.ID, UpdateUserInput{
+		Email: "renamed@example.test", Name: "Renamed member", Roles: []string{"reader", "writer"},
+		IsAdmin: true, TeamIDs: []string{team.ID, team.ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Email != "renamed@example.test" || updated.Name != "Renamed member" || !updated.IsAdmin ||
+		len(updated.Roles) != 2 || len(updated.Teams) != 1 || updated.Teams[0].ID != team.ID {
+		t.Fatalf("unexpected updated user: %#v", updated)
+	}
+
+	if _, err := store.UpdateUser(ctx, member.ID, UpdateUserInput{
+		Email: admin.Email, Name: member.Name, Roles: member.Roles, TeamIDs: []string{team.ID},
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate email error = %v", err)
+	}
+	if _, err := store.UpdateUser(ctx, member.ID, UpdateUserInput{
+		Email: member.Email, Name: member.Name, Roles: member.Roles, TeamIDs: []string{"missing-team"},
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing team error = %v", err)
+	}
+	afterFailure, err := store.GetUser(ctx, member.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterFailure.Email != updated.Email || len(afterFailure.Teams) != 1 || afterFailure.Teams[0].ID != team.ID {
+		t.Fatalf("failed update was not atomic: %#v", afterFailure)
+	}
+
+	renamed, err := store.UpdateTeam(ctx, team.ID, "Incident response")
+	if err != nil || renamed.Name != "Incident response" {
+		t.Fatalf("renamed team = %#v, err = %v", renamed, err)
+	}
+	if _, err := store.UpdateTeam(ctx, team.ID, admin.Teams[0].Name); !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate team name error = %v", err)
+	}
+	if _, err := store.UpdateTeam(ctx, "missing-team", "Missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing team update error = %v", err)
+	}
+}
+
+func TestUpdateUserRetainsAnActiveAdministrator(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+
+	if err := store.EnsureBootstrapAdmin(ctx, BootstrapUser{
+		Email: "admin@example.test", Name: "Admin", Password: "correct-horse-battery",
+		Team: "Platform", Roles: []string{"reader"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	admin, err := store.Authenticate(ctx, "admin@example.test", "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateUser(ctx, admin.ID, UpdateUserInput{
+		Email: admin.Email, Name: admin.Name, Roles: admin.Roles, Disabled: true,
+		TeamIDs: []string{admin.Teams[0].ID},
+	}); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("last administrator suspension error = %v", err)
+	}
+
+	second, err := store.CreateUser(ctx, CreateUserInput{
+		Email: "admin2@example.test", Name: "Second admin", Password: "another-secure-password",
+		Roles: []string{"reader"}, IsAdmin: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateUser(ctx, admin.ID, UpdateUserInput{
+		Email: admin.Email, Name: admin.Name, Roles: admin.Roles, Disabled: true,
+		TeamIDs: []string{admin.Teams[0].ID},
+	}); err != nil {
+		t.Fatalf("suspend with another active administrator: %v", err)
+	}
+	if _, err := store.GetUser(ctx, second.ID); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -4,7 +4,7 @@ import {
 } from "lucide-react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AdminPanel } from "./components/AdminPanel";
+import { AccessManagementPage } from "./components/AccessManagementPage";
 import { PasswordPanel } from "./components/PasswordPanel";
 import { QueryEditor, type QueryEditorHandle } from "./components/QueryEditor";
 import { ResultViewer } from "./components/ResultViewer";
@@ -25,7 +25,12 @@ import type {
 } from "./types";
 
 type Theme = "light" | "dark";
+type AppRoute = "explorer" | "admin-access";
 type SessionState = { kind: "loading" } | { kind: "signed-out" } | { kind: "ready"; session: Session } | { kind: "error"; message: string };
+
+function currentRoute(): AppRoute {
+  return window.location.pathname === "/admin/access" ? "admin-access" : "explorer";
+}
 
 function runtimeTab(tab: PersistedTab): ExplorerTab {
   return { ...tab, resultMode: tab.resultMode === "json" ? "json" : "table", status: "idle", rows: [], droppedRows: 0 };
@@ -87,10 +92,10 @@ export default function App() {
   const [shareTarget, setShareTarget] = useState("");
   const [shareFolder, setShareFolder] = useState("");
   const [teamLibraries, setTeamLibraries] = useState<TeamLibrary[]>([]);
-  const [adminOpen, setAdminOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [toast, setToast] = useState("");
+  const [route, setRoute] = useState<AppRoute>(currentRoute);
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("vesta-theme") as Theme) || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
   const editorRef = useRef<QueryEditorHandle>(null);
   const controllers = useRef(new Map<string, AbortController>());
@@ -102,6 +107,28 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("vesta-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    const handlePopState = () => setRoute(currentRoute());
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  const openAccessManagement = useCallback(() => {
+    window.history.pushState({ vestaFromExplorer: true }, "", "/admin/access");
+    setRoute(currentRoute());
+    setShareOpen(false);
+    setExportOpen(false);
+  }, []);
+
+  const returnToExplorer = useCallback(() => {
+    if (window.history.state?.vestaFromExplorer) {
+      window.history.back();
+      return;
+    }
+    window.history.replaceState(null, "", "/");
+    setRoute("explorer");
+  }, []);
 
   useEffect(() => {
     const returnHash = sessionStorage.getItem("vesta:return-hash");
@@ -493,6 +520,11 @@ export default function App() {
       const [currentSession, libraries] = await Promise.all([getSession(), getTeamLibrary()]);
       setSessionState({ kind: "ready", session: currentSession });
       setTeamLibraries(libraries);
+      setShareTarget((current) => current === session?.user.email ? currentSession.user.email : current);
+      setTabs((current) => current.map((tab) => isContextAllowed(currentSession, tab.sourceId, tab.tenant)
+        ? { ...tab, contextError: undefined }
+        : { ...tab, contextError: "This source or tenant is no longer authorized." }));
+      setHistoryEntries((current) => current.filter((entry) => isContextAllowed(currentSession, entry.sourceId, entry.tenant)));
     } catch (error) {
       setToast(error instanceof Error ? error.message : "Account data could not be refreshed");
     }
@@ -561,7 +593,24 @@ export default function App() {
   if (sessionState.kind === "loading") return <Splash />;
   if (sessionState.kind === "signed-out") return <SignIn />;
   if (sessionState.kind === "error") return <FatalError message={sessionState.message} />;
-  if (!activeTab || !session) return <Splash />;
+  if (!session) return <Splash />;
+  if (route === "admin-access") {
+    return (
+      <>
+        <AccessManagementPage
+          session={session}
+          theme={theme}
+          onTheme={setTheme}
+          onBack={returnToExplorer}
+          onMessage={setToast}
+          onSessionChanged={refreshAccountData}
+        />
+        <div className="screenreader-status" aria-live="polite">{toast}</div>
+        {toast && <div className="toast"><span>{toast}</span></div>}
+      </>
+    );
+  }
+  if (!activeTab) return <Splash />;
 
   const running = activeTab.status === "running" || activeTab.status === "tailing";
   const stale = Boolean(activeTab.lastExecutedQuery && activeTab.query !== activeTab.lastExecutedQuery);
@@ -574,7 +623,7 @@ export default function App() {
         <div className="header-actions">
           <button className="icon-button" aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>{theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}</button>
           <button className="icon-button" aria-label="Change password" onClick={() => setPasswordOpen(true)}><KeyRound size={16} /></button>
-          {session.user.isAdmin && <button className="icon-button" aria-label="Manage users and teams" onClick={() => setAdminOpen(true)}><Users size={16} /></button>}
+          {session.user.isAdmin && <button className="icon-button" aria-label="Manage users, teams, and permissions" onClick={openAccessManagement}><Users size={16} /></button>}
           <div className="identity"><span>{session.user.name || session.user.email}</span><small>{session.user.email}</small></div>
           <a className="icon-button" aria-label="Sign out" href="/auth/logout"><LogOut size={16} /></a>
         </div>
@@ -703,7 +752,6 @@ export default function App() {
       </main>
       <div className="screenreader-status" aria-live="polite">{toast}</div>
       {toast && <div className="toast"><span>{toast}</span></div>}
-      {adminOpen && <AdminPanel csrfToken={session.csrfToken} onClose={() => setAdminOpen(false)} onChanged={() => void refreshAccountData()} onMessage={setToast} />}
       {passwordOpen && <PasswordPanel csrfToken={session.csrfToken} onClose={() => setPasswordOpen(false)} onMessage={setToast} />}
     </div>
   );

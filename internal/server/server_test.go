@@ -590,3 +590,109 @@ func TestLocalDirectoryAndFolderedTeamQueries(t *testing.T) {
 		t.Fatalf("unexpected team library: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
+
+func TestAdminAccessManagement(t *testing.T) {
+	runtime := newTestRuntime(t, "http://upstream-secret.example.test", config.LimitsConfig{})
+	runtime.cfg.Sources[0].Tenants[0].Roles = []string{"tenant-reader"}
+	runtime.cfg.Sources[0].Tenants = append(runtime.cfg.Sources[0].Tenants, config.Tenant{
+		AccountID: "56", ProjectID: "78", Name: "shared",
+	})
+	admin := runtime.client(t, "tester@example.test", "correct-horse-battery")
+
+	do := func(client http.Handler, method, path, body string, want int) []byte {
+		t.Helper()
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		if method != http.MethodGet {
+			request.Header.Set("X-CSRF-Token", "vesta-development-csrf")
+		}
+		recorder := httptest.NewRecorder()
+		client.ServeHTTP(recorder, request)
+		if recorder.Code != want {
+			t.Fatalf("%s %s status = %d, body = %s", method, path, recorder.Code, recorder.Body.String())
+		}
+		return recorder.Body.Bytes()
+	}
+
+	permissionsBody := do(admin, http.MethodGet, "/api/v1/admin/permissions", "", http.StatusOK)
+	var catalog permissionCatalog
+	if err := json.Unmarshal(permissionsBody, &catalog); err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Roles) != 2 || catalog.Roles[0] != "reader" || catalog.Roles[1] != "tenant-reader" ||
+		len(catalog.Sources) != 1 || len(catalog.Sources[0].Tenants) != 2 ||
+		catalog.Sources[0].Tenants[1].Roles == nil {
+		t.Fatalf("unexpected permission catalog: %#v", catalog)
+	}
+	permissionsJSON := string(permissionsBody)
+	if strings.Contains(permissionsJSON, "upstream-secret") || strings.Contains(permissionsJSON, "hiddenFields") ||
+		strings.Contains(permissionsJSON, "authorization") || strings.Contains(permissionsJSON, `"roles":null`) {
+		t.Fatalf("permission catalog exposed sensitive source configuration: %s", permissionsJSON)
+	}
+
+	do(admin, http.MethodPost, "/api/v1/admin/users", `{
+		"email":"unknown@example.test","name":"Unknown","password":"member-secure-password",
+		"roles":["future-role"],"isAdmin":false
+	}`, http.StatusBadRequest)
+
+	var member storage.User
+	if err := json.Unmarshal(do(admin, http.MethodPost, "/api/v1/admin/users", `{
+		"email":"member@example.test","name":"Member","password":"member-secure-password",
+		"roles":["reader"],"isAdmin":false
+	}`, http.StatusCreated), &member); err != nil {
+		t.Fatal(err)
+	}
+	memberClient := runtime.client(t, "member@example.test", "member-secure-password")
+	do(memberClient, http.MethodGet, "/api/v1/admin/permissions", "", http.StatusForbidden)
+
+	adminUser, err := runtime.store.FindUser(t.Context(), "tester@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	platformID := adminUser.Teams[0].ID
+	var updated storage.User
+	updateBody := `{
+		"email":"renamed@example.test","name":"Renamed member","roles":["reader","tenant-reader"],
+		"isAdmin":false,"disabled":false,"teamIds":["` + platformID + `"]
+	}`
+	if err := json.Unmarshal(do(admin, http.MethodPut, "/api/v1/admin/users/"+member.ID, updateBody, http.StatusOK), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Email != "renamed@example.test" || len(updated.Teams) != 1 || len(updated.Roles) != 2 {
+		t.Fatalf("unexpected updated user: %#v", updated)
+	}
+
+	legacy, err := runtime.store.CreateUser(t.Context(), storage.CreateUserInput{
+		Email: "legacy@example.test", Name: "Legacy", Password: "legacy-secure-password",
+		Roles: []string{"legacy-role"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	do(admin, http.MethodPut, "/api/v1/admin/users/"+legacy.ID, `{
+		"email":"legacy@example.test","name":"Legacy","roles":["legacy-role","reader"],
+		"isAdmin":false,"disabled":false,"teamIds":[]
+	}`, http.StatusOK)
+	do(admin, http.MethodPut, "/api/v1/admin/users/"+legacy.ID, `{
+		"email":"legacy@example.test","name":"Legacy","roles":["legacy-role","new-role"],
+		"isAdmin":false,"disabled":false,"teamIds":[]
+	}`, http.StatusBadRequest)
+
+	do(admin, http.MethodPut, "/api/v1/admin/users/"+adminUser.ID, `{
+		"email":"tester@example.test","name":"Tester","roles":["reader"],
+		"isAdmin":false,"disabled":false,"teamIds":["`+platformID+`"]
+	}`, http.StatusConflict)
+
+	teamJSON := do(admin, http.MethodPost, "/api/v1/admin/teams", `{"name":"On call"}`, http.StatusCreated)
+	var team storage.Team
+	if err := json.Unmarshal(teamJSON, &team); err != nil {
+		t.Fatal(err)
+	}
+	do(admin, http.MethodPut, "/api/v1/admin/teams/"+team.ID, `{"name":"Incident response"}`, http.StatusOK)
+	do(admin, http.MethodPut, "/api/v1/admin/teams/"+team.ID, `{"name":"Platform"}`, http.StatusConflict)
+
+	do(admin, http.MethodPut, "/api/v1/admin/users/"+member.ID, `{
+		"email":"renamed@example.test","name":"Renamed member","roles":["reader"],
+		"isAdmin":false,"disabled":true,"teamIds":[]
+	}`, http.StatusOK)
+	do(memberClient, http.MethodGet, "/api/v1/session", "", http.StatusUnauthorized)
+}
