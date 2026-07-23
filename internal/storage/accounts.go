@@ -58,6 +58,15 @@ type CreateUserInput struct {
 	IsAdmin  bool
 }
 
+type UpdateUserInput struct {
+	Email    string
+	Name     string
+	Roles    []string
+	IsAdmin  bool
+	Disabled bool
+	TeamIDs  []string
+}
+
 func (s *Store) EnsureBootstrapAdmin(ctx context.Context, input BootstrapUser) error {
 	var count int
 	if err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM users").Scan(&count); err != nil {
@@ -150,6 +159,86 @@ func (s *Store) CreateUser(ctx context.Context, input CreateUserInput) (User, er
 		ID: id, Email: normalizeEmail(input.Email), Name: strings.TrimSpace(input.Name),
 		Roles: normalizedRoles(input.Roles), IsAdmin: input.IsAdmin, Teams: []Team{}, CreatedAt: now,
 	}, nil
+}
+
+func (s *Store) UpdateUser(ctx context.Context, id string, input UpdateUserInput) (User, error) {
+	if err := validateAccountIdentity(input.Email, input.Name, input.Roles); err != nil {
+		return User{}, err
+	}
+	input.TeamIDs = normalizedIDs(input.TeamIDs)
+	for _, teamID := range input.TeamIDs {
+		if teamID == "" {
+			return User{}, errors.New("team IDs must not be empty")
+		}
+	}
+	roles, err := encodeRoles(input.Roles)
+	if err != nil {
+		return User{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return User{}, fmt.Errorf("begin user update: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var wasAdmin, wasDisabled int
+	if err := tx.QueryRowContext(ctx, "SELECT is_admin, disabled FROM users WHERE id = ?", id).Scan(&wasAdmin, &wasDisabled); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return User{}, ErrNotFound
+		}
+		return User{}, fmt.Errorf("load user for update: %w", err)
+	}
+	if wasAdmin != 0 && wasDisabled == 0 && (!input.IsAdmin || input.Disabled) {
+		var activeAdmins int
+		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM users WHERE is_admin = 1 AND disabled = 0").Scan(&activeAdmins); err != nil {
+			return User{}, fmt.Errorf("count active administrators: %w", err)
+		}
+		if activeAdmins <= 1 {
+			return User{}, ErrLastAdmin
+		}
+	}
+	for _, teamID := range input.TeamIDs {
+		var exists int
+		if err := tx.QueryRowContext(ctx, "SELECT 1 FROM teams WHERE id = ?", teamID).Scan(&exists); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return User{}, ErrNotFound
+			}
+			return User{}, fmt.Errorf("load team for user update: %w", err)
+		}
+	}
+
+	admin := 0
+	if input.IsAdmin {
+		admin = 1
+	}
+	disabled := 0
+	if input.Disabled {
+		disabled = 1
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE users
+		SET email = ?, name = ?, roles = ?, is_admin = ?, disabled = ?, updated_at = ?
+		WHERE id = ?`,
+		normalizeEmail(input.Email), strings.TrimSpace(input.Name), roles, admin, disabled, time.Now().Unix(), id,
+	); err != nil {
+		if isUniqueError(err) {
+			return User{}, ErrConflict
+		}
+		return User{}, fmt.Errorf("update user: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM team_members WHERE user_id = ?", id); err != nil {
+		return User{}, fmt.Errorf("replace user memberships: %w", err)
+	}
+	now := time.Now().Unix()
+	for _, teamID := range input.TeamIDs {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO team_members (team_id, user_id, created_at) VALUES (?, ?, ?)", teamID, id, now); err != nil {
+			return User{}, fmt.Errorf("replace user membership: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return User{}, fmt.Errorf("commit user update: %w", err)
+	}
+	return s.GetUser(ctx, id)
 }
 
 func (s *Store) Authenticate(ctx context.Context, email, password string) (User, error) {
@@ -268,6 +357,28 @@ func (s *Store) CreateTeam(ctx context.Context, name string) (Team, error) {
 			return Team{}, ErrConflict
 		}
 		return Team{}, fmt.Errorf("create team: %w", err)
+	}
+	return Team{ID: id, Name: name}, nil
+}
+
+func (s *Store) UpdateTeam(ctx context.Context, id, name string) (Team, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 120 {
+		return Team{}, errors.New("team name is required and must not exceed 120 characters")
+	}
+	result, err := s.db.ExecContext(ctx, "UPDATE teams SET name = ? WHERE id = ?", name, id)
+	if err != nil {
+		if isUniqueError(err) {
+			return Team{}, ErrConflict
+		}
+		return Team{}, fmt.Errorf("update team: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Team{}, fmt.Errorf("check updated team: %w", err)
+	}
+	if affected == 0 {
+		return Team{}, ErrNotFound
 	}
 	return Team{ID: id, Name: name}, nil
 }
@@ -417,15 +528,22 @@ func (s *Store) ListDirectory(ctx context.Context) (Directory, error) {
 }
 
 func validateAccountInput(email, name, password string, roles []string) error {
+	if err := validateAccountIdentity(email, name, roles); err != nil {
+		return err
+	}
+	if len(password) < 12 || len(password) > 128 {
+		return errors.New("password must contain between 12 and 128 characters")
+	}
+	return nil
+}
+
+func validateAccountIdentity(email, name string, roles []string) error {
 	email = normalizeEmail(email)
 	if !strings.Contains(email, "@") || len(email) > 320 {
 		return errors.New("a valid email address is required")
 	}
 	if strings.TrimSpace(name) == "" || len(strings.TrimSpace(name)) > 120 {
 		return errors.New("name is required and must not exceed 120 characters")
-	}
-	if len(password) < 12 || len(password) > 128 {
-		return errors.New("password must contain between 12 and 128 characters")
 	}
 	for _, role := range roles {
 		if strings.TrimSpace(role) == "" || len(role) > 120 {
@@ -446,6 +564,15 @@ func normalizedRoles(roles []string) []string {
 	}
 	slices.Sort(roles)
 	return slices.Compact(roles)
+}
+
+func normalizedIDs(ids []string) []string {
+	ids = slices.Clone(ids)
+	for i := range ids {
+		ids[i] = strings.TrimSpace(ids[i])
+	}
+	slices.Sort(ids)
+	return slices.Compact(ids)
 }
 
 func encodeRoles(roles []string) (string, error) {

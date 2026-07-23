@@ -19,6 +19,7 @@ var ErrShareNotFound = errors.New("share not found")
 var ErrNotFound = errors.New("record not found")
 var ErrConflict = errors.New("record already exists")
 var ErrInvalidCredentials = errors.New("invalid credentials")
+var ErrLastAdmin = errors.New("at least one active administrator is required")
 
 type Share struct {
 	ID            string

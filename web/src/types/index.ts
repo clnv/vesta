@@ -139,10 +139,39 @@ export interface DirectoryUser {
   roles: string[];
   isAdmin: boolean;
   disabled: boolean;
+  createdAt: string;
 }
 
 export interface Directory {
   users: DirectoryUser[];
   teams: Team[];
   memberships: Array<{ userId: string; teamId: string }>;
+}
+
+export interface PermissionTenant {
+  accountId: string;
+  projectId: string;
+  name: string;
+  roles: string[];
+}
+
+export interface PermissionSource {
+  id: string;
+  name: string;
+  roles: string[];
+  tenants: PermissionTenant[];
+}
+
+export interface PermissionCatalog {
+  roles: string[];
+  sources: PermissionSource[];
+}
+
+export interface UpdateDirectoryUserInput {
+  email: string;
+  name: string;
+  roles: string[];
+  isAdmin: boolean;
+  disabled: boolean;
+  teamIds: string[];
 }

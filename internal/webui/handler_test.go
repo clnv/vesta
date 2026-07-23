@@ -16,7 +16,7 @@ func TestHandlerServesSPAAndAssets(t *testing.T) {
 	}
 	handler := NewHandler(api)
 
-	for _, path := range []string{"/", "/saved/query"} {
+	for _, path := range []string{"/", "/saved/query", "/admin/access"} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
 		if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `<div id="root"></div>`) {
