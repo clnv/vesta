@@ -2,13 +2,15 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { ChevronDown, ChevronRight, Copy } from "lucide-react";
 import { useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { orderedColumns } from "../lib/format";
-import { columnsFromQuery } from "../lib/logsql";
+import { columnsFromQuery, type RenderDirective } from "../lib/logsql";
 import type { ResultMode } from "../types";
+import { ChartViewer } from "./ChartViewer";
 
 interface Props {
   rows: Record<string, unknown>[];
   mode: ResultMode;
   query?: string;
+  visualization?: RenderDirective | null;
   onCopy(value: string): void;
 }
 
@@ -48,7 +50,7 @@ function levelClass(row: Record<string, unknown>): string {
   }
 }
 
-export function ResultViewer({ rows, mode, query = "", onCopy }: Props) {
+export function ResultViewer({ rows, mode, query = "", visualization, onCopy }: Props) {
   const parentRef = useRef<HTMLDivElement>(null);
   const resizeRef = useRef<{ column: string; pointerId: number; startX: number; startWidth: number } | null>(null);
   const [expanded, setExpanded] = useState<ExpandedDetail | null>(null);
@@ -119,6 +121,17 @@ export function ResultViewer({ rows, mode, query = "", onCopy }: Props) {
         <p>Results stream here as VictoriaLogs finds them.</p>
       </div>
     );
+  }
+
+  if (mode === "chart") {
+    return visualization
+      ? <ChartViewer rows={rows} directive={visualization} preferredColumns={columns} />
+      : (
+        <div className="chart-message">
+          <strong>No visualization directive</strong>
+          <p>Add a terminal <code>| render timechart</code> stage and run the query.</p>
+        </div>
+      );
   }
 
   return (

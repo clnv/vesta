@@ -187,7 +187,7 @@ func validateSharedQuery(payload sharedQuery) string {
 	if len(payload.Query) > maxShareQueryBytes || len(payload.Title) > maxShareTitleBytes {
 		return "share payload is too large"
 	}
-	if payload.ResultMode != "table" && payload.ResultMode != "json" {
+	if payload.ResultMode != "table" && payload.ResultMode != "json" && payload.ResultMode != "chart" {
 		return "share result mode is invalid"
 	}
 	return ""

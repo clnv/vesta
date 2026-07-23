@@ -37,6 +37,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, tail bool)
 	if !ok {
 		return
 	}
+	input.Query = logsql.WithoutRenderOperator(input.Query)
 	if !logsql.HasTimeFilter(input.Query) {
 		writeJSONError(w, http.StatusUnprocessableEntity, "LogsQL query must contain an explicit _time: filter")
 		return
@@ -169,6 +170,7 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request, values b
 	if !ok {
 		return
 	}
+	input.Query = logsql.WithoutRenderOperator(input.Query)
 	if !logsql.HasTimeFilter(input.Query) {
 		writeJSONError(w, http.StatusUnprocessableEntity, "LogsQL query must contain an explicit _time: filter")
 		return

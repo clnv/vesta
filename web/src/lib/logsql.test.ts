@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { columnsFromQuery, hasTimeFilter, insertFilter, quoteLogSQLValue } from "./logsql";
+import {
+  columnsFromQuery, hasTimeFilter, insertFilter, quoteLogSQLValue, renderDirectiveFromQuery,
+} from "./logsql";
 
 describe("hasTimeFilter", () => {
   it.each([
@@ -33,5 +35,41 @@ describe("columnsFromQuery", () => {
       # | fields commented
       | fields _time, "http.status", _time, *
     `)).toEqual(["_time", "http.status"]);
+  });
+});
+
+describe("renderDirectiveFromQuery", () => {
+  it("extracts a terminal Kusto-style render operator and its properties", () => {
+    expect(renderDirectiveFromQuery(`
+      _time:1h
+      | stats by (_time:5m) count() as requests
+      | render timechart with (title="Requests | 5m", xcolumn=_time, ycolumns=requests, errors, legend=hidden)
+    `)).toEqual({
+      visualization: "timechart",
+      supported: true,
+      properties: {
+        title: "Requests | 5m",
+        xcolumn: "_time",
+        ycolumns: "requests, errors",
+        legend: "hidden",
+      },
+      executableQuery: `
+      _time:1h
+      | stats by (_time:5m) count() as requests`,
+    });
+  });
+
+  it("ignores render text in strings, comments, and non-terminal stages", () => {
+    expect(renderDirectiveFromQuery('_time:1h _msg:"| render piechart" | limit 10')).toBeNull();
+    expect(renderDirectiveFromQuery("_time:1h | limit 10 # | render piechart")).toBeNull();
+    expect(renderDirectiveFromQuery("_time:1h | render timechart | limit 10")).toBeNull();
+  });
+
+  it("recognizes unsupported visualizations so they are not sent upstream", () => {
+    expect(renderDirectiveFromQuery("_time:1h | stats count() | render treemap")).toMatchObject({
+      visualization: "treemap",
+      supported: false,
+      executableQuery: "_time:1h | stats count()",
+    });
   });
 });

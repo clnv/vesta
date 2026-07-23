@@ -1,4 +1,4 @@
-export type ResultMode = "table" | "json";
+export type ResultMode = "table" | "json" | "chart";
 export type RunStatus = "idle" | "running" | "tailing" | "complete" | "truncated" | "error" | "cancelled";
 
 export interface Tenant {

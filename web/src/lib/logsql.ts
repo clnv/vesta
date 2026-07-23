@@ -1,5 +1,82 @@
 export const DEFAULT_QUERY = "_time:1h | sort by (_time) desc | limit 200";
 
+export const SUPPORTED_RENDER_VISUALIZATIONS = [
+  "anomalychart",
+  "areachart",
+  "barchart",
+  "card",
+  "columnchart",
+  "linechart",
+  "piechart",
+  "scatterchart",
+  "stackedareachart",
+  "table",
+  "timechart",
+] as const;
+
+export type RenderVisualization = typeof SUPPORTED_RENDER_VISUALIZATIONS[number];
+
+export interface RenderDirective {
+  visualization: string;
+  supported: boolean;
+  properties: Record<string, string>;
+  executableQuery: string;
+}
+
+export function renderDirectiveFromQuery(query: string): RenderDirective | null {
+  const pipe = lastTopLevelPipe(query);
+  if (pipe < 0) return null;
+  const stage = stripComments(query.slice(pipe + 1)).trim();
+  const match = stage.match(/^render\s+([a-z][a-z0-9_]*)(?:\s+with\s*\(([\s\S]*)\))?$/i);
+  if (!match) return null;
+  const visualization = match[1].toLowerCase();
+  return {
+    visualization,
+    supported: (SUPPORTED_RENDER_VISUALIZATIONS as readonly string[]).includes(visualization),
+    properties: parseRenderProperties(match[2] ?? ""),
+    executableQuery: query.slice(0, pipe).trimEnd(),
+  };
+}
+
+function parseRenderProperties(value: string): Record<string, string> {
+  const properties: Record<string, string> = {};
+  let start = 0;
+  let quote = "";
+  const entries: string[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (quote) {
+      if (char === "\\") index += 1;
+      else if (char === quote) quote = "";
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "," && /^\s*[A-Za-z][A-Za-z0-9_]*\s*=/.test(value.slice(index + 1))) {
+      entries.push(value.slice(start, index));
+      start = index + 1;
+    }
+  }
+  entries.push(value.slice(start));
+  for (const entry of entries) {
+    const equals = entry.indexOf("=");
+    if (equals < 1) continue;
+    const name = entry.slice(0, equals).trim().toLowerCase();
+    let propertyValue = entry.slice(equals + 1).trim();
+    if (
+      propertyValue.length >= 2
+      && ((propertyValue.startsWith('"') && propertyValue.endsWith('"'))
+        || (propertyValue.startsWith("'") && propertyValue.endsWith("'")))
+    ) {
+      propertyValue = propertyValue.slice(1, -1).replace(/\\(.)/g, "$1");
+    }
+    if (name) properties[name] = propertyValue;
+  }
+  return properties;
+}
+
 export function hasTimeFilter(query: string): boolean {
   for (let index = 0; index < query.length; ) {
     const char = query[index];
@@ -149,6 +226,30 @@ function stripCommentsAndStrings(query: string): string {
   return clean;
 }
 
+function stripComments(query: string): string {
+  let clean = "";
+  let quote = "";
+  for (let index = 0; index < query.length; index += 1) {
+    const char = query[index];
+    if (quote) {
+      clean += char;
+      if (char === "\\") {
+        if (index + 1 < query.length) clean += query[++index];
+      } else if (char === quote) {
+        quote = "";
+      }
+    } else if (char === '"' || char === "'") {
+      quote = char;
+      clean += char;
+    } else if (char === "#") {
+      while (index + 1 < query.length && query[index + 1] !== "\n") index += 1;
+    } else {
+      clean += char;
+    }
+  }
+  return clean;
+}
+
 export function insertFilter(query: string, filter: string): string {
   const pipe = findTopLevelPipe(query);
   if (pipe < 0) return `${query.trimEnd()} ${filter}`;
@@ -174,6 +275,28 @@ function findTopLevelPipe(query: string): number {
     else if (char === "|") return i;
   }
   return -1;
+}
+
+function lastTopLevelPipe(query: string): number {
+  let pipe = -1;
+  let quote = "";
+  let comment = false;
+  for (let index = 0; index < query.length; index += 1) {
+    const char = query[index];
+    if (comment) {
+      if (char === "\n") comment = false;
+      continue;
+    }
+    if (quote) {
+      if (char === "\\") index += 1;
+      else if (char === quote) quote = "";
+      continue;
+    }
+    if (char === "#") comment = true;
+    else if (char === '"' || char === "'") quote = char;
+    else if (char === "|") pipe = index;
+  }
+  return pipe;
 }
 
 export function quoteLogSQLValue(value: string): string {

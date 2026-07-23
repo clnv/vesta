@@ -24,9 +24,9 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 5173,
     proxy: {
-      "/api": "http://127.0.0.1:8080",
-      "/auth": "http://127.0.0.1:8080",
-      "/metrics": "http://127.0.0.1:8080",
+      "/api": "http://127.0.0.1:18080",
+      "/auth": "http://127.0.0.1:18080",
+      "/metrics": "http://127.0.0.1:18080",
     },
   },
   test: {

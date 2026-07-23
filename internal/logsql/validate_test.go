@@ -26,3 +26,44 @@ func TestHasTimeFilter(t *testing.T) {
 		})
 	}
 }
+
+func TestWithoutRenderOperator(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{
+			name:  "timechart",
+			query: "_time:1h | stats by (_time:5m) count() | render timechart",
+			want:  "_time:1h | stats by (_time:5m) count()",
+		},
+		{
+			name:  "properties containing pipe",
+			query: `_time:1h | stats count() | render card with (title="Errors | total")`,
+			want:  "_time:1h | stats count()",
+		},
+		{
+			name:  "comment",
+			query: "_time:1h | limit 10 # | render piechart",
+			want:  "_time:1h | limit 10 # | render piechart",
+		},
+		{
+			name:  "non terminal",
+			query: "_time:1h | render timechart | limit 10",
+			want:  "_time:1h | render timechart | limit 10",
+		},
+		{
+			name:  "string",
+			query: `_time:1h _msg:"| render piechart" | limit 10`,
+			want:  `_time:1h _msg:"| render piechart" | limit 10`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := WithoutRenderOperator(test.query); got != test.want {
+				t.Fatalf("WithoutRenderOperator() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
