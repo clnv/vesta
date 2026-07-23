@@ -114,8 +114,13 @@ jobs:
         uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v4.2.3
+      - name: Install Just
+        uses: taiki-e/install-action@c44f6b046f1c29ae5918b1e0bfdbb2f1813836fd # v2.84.1
+        with:
+          tool: just@1.57.0
+          fallback: none
       - name: Lint default and production values
-        run: make helm-lint
+        run: just helm-lint
       - name: Render default deployment
         run: helm template vesta ./charts/vesta --namespace vesta > /tmp/vesta-default.yaml
       - name: Render production deployment
@@ -175,10 +180,15 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Just
+        uses: taiki-e/install-action@c44f6b046f1c29ae5918b1e0bfdbb2f1813836fd # v2.84.1
+        with:
+          tool: just@1.57.0
+          fallback: none
       - name: Validate Dockerfile with BuildKit
         run: docker build --check .
       - name: Run pinned VictoriaLogs integration suite
-        run: make integration-test
+        run: just integration-test
       - name: Verify final image user
         shell: bash
         run: |

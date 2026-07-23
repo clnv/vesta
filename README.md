@@ -4,7 +4,7 @@ Vesta is a self-hosted, keyboard-first LogsQL explorer for VictoriaLogs. It keep
 
 ## Run locally
 
-Requirements: Go 1.26+, Node.js 24+, and a VictoriaLogs server on `localhost:9428`.
+Requirements: Go 1.26+, Node.js 24+, Just 1.57+, and a VictoriaLogs server on `localhost:9428`.
 
 ```sh
 cp config.example.yml config.local.yml
@@ -46,11 +46,11 @@ Vesta supports `none`, `basic`, and `bearer` authentication for an administrator
 ## Validate and package
 
 ```sh
-make test
-make build
+just test
+just build
 docker build -t vesta:local .
-make integration-test
-make helm-lint
+just integration-test
+just helm-lint
 ```
 
 The integration target builds Vesta, starts a pinned VictoriaLogs `v1.52.0` container, seeds two tenants, and verifies regular and stats rows, field discovery, tenant isolation, hidden fields, and live tail. It removes its containers and volume after the run.
@@ -76,6 +76,7 @@ GitHub Actions configuration lives under [`.github/workflows`](.github/workflows
 
 - `CI` checks workflow syntax, Go formatting/module integrity/vet/race tests/coverage, reachable Go vulnerabilities, frontend tests and production builds, strict Helm linting and render variants, chart packaging, pull-request dependency changes, Dockerfile checks, the pinned VictoriaLogs integration suite, and the final container UID.
 - `CodeQL` analyzes Go and TypeScript on `main`, pull requests, manual runs, and a weekly schedule.
+- `Publish container image` publishes AMD64 images to `ghcr.io/<owner>/<repository>` from `master`, version tags, and manual runs. Version tags also produce semantic-version tags, while the default branch publishes `latest`.
 - [Dependabot](.github/dependabot.yml) groups weekly npm, Go module, Docker, and GitHub Actions updates.
 
 Actions are pinned to immutable commit SHAs with their release versions documented inline. CI has read-only repository permissions by default, with `security-events: write` granted only to CodeQL.
