@@ -78,6 +78,10 @@ export async function createTeamQuery(teamId: string, folderId: string, payload:
   return postJSON("/api/v1/team-queries", { teamId, folderId, payload }, csrfToken);
 }
 
+export async function updateTeamQuery(id: string, title: string, folderId: string, csrfToken: string): Promise<TeamQuery> {
+  return postJSON(`/api/v1/team-queries/${encodeURIComponent(id)}`, { title, folderId }, csrfToken);
+}
+
 export async function getDirectory(): Promise<Directory> {
   const response = await fetch("/api/v1/admin/directory", { credentials: "same-origin" });
   if (!response.ok) throw new APIError(await parseError(response), response.status);

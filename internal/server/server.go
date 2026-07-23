@@ -64,6 +64,7 @@ func New(cfg *config.Config, authenticator *auth.Authenticator, store *storage.S
 	mux.Handle("GET /api/v1/team-library", s.withUser(http.HandlerFunc(s.handleTeamLibrary)))
 	mux.Handle("POST /api/v1/team-folders", s.withUser(http.HandlerFunc(s.handleCreateFolder)))
 	mux.Handle("POST /api/v1/team-queries", s.withUser(http.HandlerFunc(s.handleCreateTeamQuery)))
+	mux.Handle("POST /api/v1/team-queries/{id}", s.withUser(http.HandlerFunc(s.handleUpdateTeamQuery)))
 	mux.Handle("DELETE /api/v1/team-queries/{id}", s.withUser(http.HandlerFunc(s.handleDeleteTeamQuery)))
 	mux.Handle("GET /api/v1/admin/directory", s.withUser(s.adminOnly(http.HandlerFunc(s.handleDirectory))))
 	mux.Handle("GET /api/v1/admin/permissions", s.withUser(s.adminOnly(http.HandlerFunc(s.handlePermissions))))

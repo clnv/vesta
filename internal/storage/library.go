@@ -52,6 +52,13 @@ type CreateTeamQueryInput struct {
 	CreatedBy       string
 }
 
+type UpdateTeamQueryInput struct {
+	ID       string
+	FolderID string
+	Title    string
+	UserID   string
+}
+
 func (s *Store) CreateFolder(ctx context.Context, teamID, name, createdBy string) (Folder, error) {
 	if _, err := s.TeamForMember(ctx, teamID, createdBy); err != nil {
 		return Folder{}, err
@@ -130,6 +137,75 @@ func (s *Store) CreateTeamQuery(ctx context.Context, input CreateTeamQueryInput)
 		TenantName: input.TenantName, ResultMode: input.ResultMode, CreatedBy: input.CreatedBy,
 		CreatedAt: now, UpdatedAt: now,
 	}, nil
+}
+
+func (s *Store) UpdateTeamQuery(ctx context.Context, input UpdateTeamQueryInput) (TeamQuery, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	if input.ID == "" || input.Title == "" || len(input.Title) > 256 || input.UserID == "" {
+		return TeamQuery{}, errors.New("star name is required and must not exceed 256 characters")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return TeamQuery{}, fmt.Errorf("begin team query update: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	query := `
+		SELECT
+			team_queries.id, team_queries.team_id, coalesce(team_queries.folder_id, ''),
+			team_queries.title, team_queries.query, team_queries.source_id,
+			team_queries.tenant_account_id, team_queries.tenant_project_id, team_queries.tenant_name,
+			team_queries.result_mode, team_queries.created_by, team_queries.created_at, team_queries.updated_at
+		FROM team_queries
+		JOIN team_members ON team_members.team_id = team_queries.team_id
+		WHERE team_queries.id = ? AND team_members.user_id = ?`
+	args := []any{input.ID, input.UserID}
+
+	var item TeamQuery
+	var createdAt int64
+	var updatedAt int64
+	if err := tx.QueryRowContext(ctx, query, args...).Scan(
+		&item.ID, &item.TeamID, &item.FolderID, &item.Title, &item.Query, &item.SourceID,
+		&item.TenantAccountID, &item.TenantProjectID, &item.TenantName,
+		&item.ResultMode, &item.CreatedBy, &createdAt, &updatedAt,
+	); errors.Is(err, sql.ErrNoRows) {
+		return TeamQuery{}, ErrNotFound
+	} else if err != nil {
+		return TeamQuery{}, fmt.Errorf("load team query for update: %w", err)
+	}
+
+	var folder any
+	if input.FolderID != "" {
+		var exists int
+		err := tx.QueryRowContext(ctx, "SELECT 1 FROM folders WHERE id = ? AND team_id = ?", input.FolderID, item.TeamID).Scan(&exists)
+		if errors.Is(err, sql.ErrNoRows) {
+			return TeamQuery{}, ErrNotFound
+		}
+		if err != nil {
+			return TeamQuery{}, fmt.Errorf("load team query folder for update: %w", err)
+		}
+		folder = input.FolderID
+	}
+
+	now := time.Now()
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE team_queries
+		SET title = ?, folder_id = ?, updated_at = ?
+		WHERE id = ?`,
+		input.Title, folder, now.Unix(), item.ID,
+	); err != nil {
+		return TeamQuery{}, fmt.Errorf("update team query: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return TeamQuery{}, fmt.Errorf("commit team query update: %w", err)
+	}
+
+	item.Title = input.Title
+	item.FolderID = input.FolderID
+	item.CreatedAt = time.Unix(createdAt, 0)
+	item.UpdatedAt = now
+	return item, nil
 }
 
 func (s *Store) DeleteTeamQuery(ctx context.Context, id, userID string, isAdmin bool) error {

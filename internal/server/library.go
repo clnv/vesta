@@ -21,6 +21,11 @@ type createTeamQueryRequest struct {
 	Payload  sharedQuery `json:"payload"`
 }
 
+type updateTeamQueryRequest struct {
+	FolderID string `json:"folderId"`
+	Title    string `json:"title"`
+}
+
 func (s *Server) handleTeamLibrary(w http.ResponseWriter, r *http.Request) {
 	user := auth.MustUser(r.Context())
 	libraries, err := s.store.ListTeamLibraries(r.Context(), user.Subject)
@@ -67,6 +72,10 @@ func (s *Server) handleCreateTeamQuery(w http.ResponseWriter, r *http.Request) {
 	if !decodeAPIJSON(w, r, &input) {
 		return
 	}
+	if strings.TrimSpace(input.Payload.Title) == "" {
+		writeJSONError(w, http.StatusBadRequest, "star name is required")
+		return
+	}
 	if message := validateSharedQuery(input.Payload); message != "" {
 		writeJSONError(w, http.StatusBadRequest, message)
 		return
@@ -92,6 +101,26 @@ func (s *Server) handleCreateTeamQuery(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusCreated, item)
 	case errors.Is(err, storage.ErrNotFound):
 		writeJSONError(w, http.StatusForbidden, "team or folder is not available")
+	default:
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+	}
+}
+
+func (s *Server) handleUpdateTeamQuery(w http.ResponseWriter, r *http.Request) {
+	var input updateTeamQueryRequest
+	if !decodeAPIJSON(w, r, &input) {
+		return
+	}
+	user := auth.MustUser(r.Context())
+	item, err := s.store.UpdateTeamQuery(r.Context(), storage.UpdateTeamQueryInput{
+		ID: r.PathValue("id"), FolderID: input.FolderID, Title: input.Title,
+		UserID: user.Subject,
+	})
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, item)
+	case errors.Is(err, storage.ErrNotFound):
+		writeJSONError(w, http.StatusNotFound, "team star was not found or cannot be edited")
 	default:
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 	}

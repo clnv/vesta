@@ -34,7 +34,7 @@ Start from `config.production.example.yml` and configure:
 - `VESTA_BOOTSTRAP_PASSWORD`, used only if the SQLite database contains no users.
 - The bootstrap user’s roles, source roles, and permitted tenant pairs. Access remains default-deny.
 - Each VictoriaLogs/vmauth credential through environment variables.
-- `storage.path`, the SQLite database used for users, password hashes, teams, memberships, folders, and shared queries. `storage.share_ttl` controls expiring private links.
+- `storage.path`, the SQLite database used for users, password hashes, teams, memberships, folders, team stars, and private shares. `storage.share_ttl` controls expiring private links.
 
 Generate a session secret with:
 
@@ -52,7 +52,7 @@ Passwords are hashed with bcrypt before storage. Administrators can open `/admin
 - The viewer stops at 50,000 rows, 32 MiB, or 30 seconds by default. Truncation is always visible and cancels the upstream request.
 - Tabs and the last 100 query texts are saved in IndexedDB. Result rows are never persisted.
 - Private query links use random opaque IDs backed by SQLite, expire automatically, and can target a local user or one of the sharer’s teams. Opening a private link requires login and rechecks the recipient’s source and tenant authorization.
-- Team members can save queries to a shared SQLite library and organize them into team folders. Loading a saved team query opens it as a protected draft and never executes it automatically.
+- Team members can name and star queries into a shared SQLite library and organize them into team folders. Opening a team star creates an editable copy in a new tab and never executes it automatically; any current team member can rename it or move it to another folder.
 
 ## Validate and package
 
@@ -64,7 +64,7 @@ just integration-test
 just helm-lint
 ```
 
-The integration target builds the `vesta-web` image from `web.Dockerfile` and `vesta-api` from `api.Dockerfile`, starts a pinned VictoriaLogs `v1.52.0` container, seeds two tenants, and verifies local login, regular and stats rows, field discovery, tenant isolation, hidden fields, live tail, private links, and folder-grouped team queries across an API restart. It removes its containers and volumes after the run.
+The integration target builds the `vesta-web` image from `web.Dockerfile` and `vesta-api` from `api.Dockerfile`, starts a pinned VictoriaLogs `v1.52.0` container, seeds two tenants, and verifies local login, regular and stats rows, field discovery, tenant isolation, hidden fields, live tail, private links, and folder-grouped team stars across an API restart. It removes its containers and volumes after the run.
 
 The `vesta-api` container expects its configuration at `/etc/vesta/config.yml` by default. `vesta-web` serves the SPA and proxies `/api`, `/auth`, and `/metrics` to the API, preserving a single browser origin. Health and Prometheus-format operational metrics are available at `/healthz` and `/metrics`. Logs include request IDs, subject IDs, source IDs, duration, row counts, and byte counts—never query text or result data.
 

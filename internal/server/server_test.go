@@ -549,7 +549,6 @@ func TestLocalDirectoryAndFolderedTeamQueries(t *testing.T) {
 		}
 		return recorder.Body.Bytes()
 	}
-
 	var member storage.User
 	if err := json.Unmarshal(post(admin, "/api/v1/admin/users", `{
 		"email":"member@example.test","name":"Member","password":"member-secure-password",
@@ -579,14 +578,39 @@ func TestLocalDirectoryAndFolderedTeamQueries(t *testing.T) {
 		"teamId":"`+team.ID+`","folderId":"`+folder.ID+`",
 		"payload":{"query":"_time:1h error","sourceId":"prod",
 		"tenant":{"accountId":"12","projectId":"34","name":"payments"},
+		"title":"","resultMode":"table"}
+	}`, http.StatusBadRequest)
+
+	var item storage.TeamQuery
+	if err := json.Unmarshal(post(memberClient, "/api/v1/team-queries", `{
+		"teamId":"`+team.ID+`","folderId":"`+folder.ID+`",
+		"payload":{"query":"_time:1h error","sourceId":"prod",
+		"tenant":{"accountId":"12","projectId":"34","name":"payments"},
 		"title":"Recent errors","resultMode":"table"}
-	}`, http.StatusCreated)
+	}`, http.StatusCreated), &item); err != nil {
+		t.Fatal(err)
+	}
+
+	var archive storage.Folder
+	if err := json.Unmarshal(post(memberClient, "/api/v1/team-folders", `{"teamId":"`+team.ID+`","name":"Archive"}`, http.StatusCreated), &archive); err != nil {
+		t.Fatal(err)
+	}
+	var updated storage.TeamQuery
+	if err := json.Unmarshal(post(memberClient, "/api/v1/team-queries/"+item.ID, `{
+		"title":"Priority errors","folderId":"`+archive.ID+`"
+	}`, http.StatusOK), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Title != "Priority errors" || updated.FolderID != archive.ID {
+		t.Fatalf("unexpected updated team star: %#v", updated)
+	}
+	post(memberClient, "/api/v1/team-queries/"+item.ID, `{"title":" ","folderId":""}`, http.StatusBadRequest)
 
 	request = httptest.NewRequest(http.MethodGet, "/api/v1/team-library", nil)
 	recorder = httptest.NewRecorder()
 	memberClient.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"name":"Incidents"`) ||
-		!strings.Contains(recorder.Body.String(), `"title":"Recent errors"`) {
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"name":"Archive"`) ||
+		!strings.Contains(recorder.Body.String(), `"title":"Priority errors"`) {
 		t.Fatalf("unexpected team library: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
