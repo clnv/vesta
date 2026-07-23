@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasTimeFilter, insertFilter, quoteLogSQLValue } from "./logsql";
+import { columnsFromQuery, hasTimeFilter, insertFilter, quoteLogSQLValue } from "./logsql";
 
 describe("hasTimeFilter", () => {
   it.each([
@@ -17,3 +17,21 @@ it("inserts filters before the first pipe", () => {
   expect(quoteLogSQLValue('a"b')).toBe('"a\\"b"');
 });
 
+describe("columnsFromQuery", () => {
+  it("preserves the last explicit fields or keep stage order", () => {
+    expect(columnsFromQuery(`
+      _time:1h
+      | fields ignored
+      | sort by (_time) desc
+      | keep _time, level, _msg
+    `)).toEqual(["_time", "level", "_msg"]);
+  });
+
+  it("ignores comments, quoted pipes, duplicates, and wildcard selectors", () => {
+    expect(columnsFromQuery(`
+      _time:1h _msg:"fields fake | fields wrong"
+      # | fields commented
+      | fields _time, "http.status", _time, *
+    `)).toEqual(["_time", "http.status"]);
+  });
+});

@@ -14,7 +14,7 @@ export interface Source {
 }
 
 export interface Session {
-  user: { subject: string; email: string; name: string };
+  user: { subject: string; email: string; name: string; teams: Team[]; isAdmin: boolean };
   sources: Source[];
   csrfToken: string;
   limits: {
@@ -85,10 +85,64 @@ export interface FieldValue {
 }
 
 export interface SharePayload {
-  v: 1;
   query: string;
   sourceId: string;
   tenant: Tenant;
   title: string;
   resultMode: ResultMode;
+}
+
+export interface ShareAudience {
+  type: "user" | "team";
+  value: string;
+}
+
+export interface Team {
+  id: string;
+  name: string;
+}
+
+export interface TeamQuery {
+  id: string;
+  teamId: string;
+  folderId?: string;
+  title: string;
+  query: string;
+  sourceId: string;
+  tenantAccountId: string;
+  tenantProjectId: string;
+  tenantName: string;
+  resultMode: ResultMode;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TeamFolder {
+  id: string;
+  teamId: string;
+  name: string;
+  queries: TeamQuery[];
+  createdAt: string;
+}
+
+export interface TeamLibrary {
+  team: Team;
+  folders: TeamFolder[];
+  queries: TeamQuery[];
+}
+
+export interface DirectoryUser {
+  id: string;
+  email: string;
+  name: string;
+  roles: string[];
+  isAdmin: boolean;
+  disabled: boolean;
+}
+
+export interface Directory {
+  users: DirectoryUser[];
+  teams: Team[];
+  memberships: Array<{ userId: string; teamId: string }>;
 }

@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/vesta-explorer/vesta/internal/auth"
 	"github.com/vesta-explorer/vesta/internal/config"
+	"github.com/vesta-explorer/vesta/internal/storage"
 	"github.com/vesta-explorer/vesta/internal/victoria"
 )
 
@@ -27,16 +30,53 @@ type upstreamCapture struct {
 	calls   int
 }
 
+type testRuntime struct {
+	handler http.Handler
+	cfg     *config.Config
+	store   *storage.Store
+}
+
+type authenticatedTestClient struct {
+	handler http.Handler
+	cookie  *http.Cookie
+	csrf    string
+}
+
+func (client authenticatedTestClient) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	r.AddCookie(client.cookie)
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Header.Get("X-CSRF-Token") == "vesta-development-csrf" {
+		r.Header.Set("X-CSRF-Token", client.csrf)
+	}
+	client.handler.ServeHTTP(w, r)
+}
+
 func testHandler(t *testing.T, upstreamURL string, limits config.LimitsConfig) http.Handler {
 	t.Helper()
+	handler, _ := testHandlerWithConfig(t, upstreamURL, limits)
+	return handler
+}
+
+func testHandlerWithConfig(t *testing.T, upstreamURL string, limits config.LimitsConfig) (http.Handler, *config.Config) {
+	t.Helper()
+	runtime := newTestRuntime(t, upstreamURL, limits)
+	return runtime.client(t, "tester@example.test", "correct-horse-battery"), runtime.cfg
+}
+
+func newTestRuntime(t *testing.T, upstreamURL string, limits config.LimitsConfig) *testRuntime {
+	t.Helper()
+	t.Setenv("TEST_VESTA_SESSION", base64.StdEncoding.EncodeToString([]byte(strings.Repeat("s", 32))))
 	cfg := &config.Config{
 		Server: config.ServerConfig{ExternalURL: "http://vesta.example.test"},
 		Auth: config.AuthConfig{
-			DevMode:    true,
-			DevUser:    config.DevUserConfig{Subject: "tester", Email: "tester@example.test", Name: "Tester", Roles: []string{"reader"}},
-			SessionTTL: config.Duration{Duration: time.Hour},
+			SessionSecretEnv: "TEST_VESTA_SESSION",
+			SessionTTL:       config.Duration{Duration: time.Hour},
+			Bootstrap: config.BootstrapUserConfig{
+				Email: "tester@example.test", Name: "Tester", PasswordEnv: "TEST_VESTA_BOOTSTRAP",
+				Team: "Platform", Roles: []string{"reader"},
+			},
 		},
-		Limits: limits,
+		Storage: config.StorageConfig{Path: ":memory:", ShareTTL: config.Duration{Duration: time.Hour}},
+		Limits:  limits,
 		Sources: []config.SourceConfig{{
 			ID: "prod", Name: "Production", URL: upstreamURL, Roles: []string{"reader"},
 			Tenants:      []config.Tenant{{AccountID: "12", ProjectID: "34", Name: "payments"}},
@@ -61,11 +101,54 @@ func testHandler(t *testing.T, upstreamURL string, limits config.LimitsConfig) h
 	if cfg.Limits.MaxLineBytes == 0 {
 		cfg.Limits.MaxLineBytes = 8 << 20
 	}
-	authenticator, err := auth.New(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	store, err := storage.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(cfg, authenticator, victoria.NewClient(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.EnsureBootstrapAdmin(t.Context(), storage.BootstrapUser{
+		Email: "tester@example.test", Name: "Tester", Password: "correct-horse-battery",
+		Team: "Platform", Roles: []string{"reader"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	authenticator := auth.New(cfg, store, logger)
+	return &testRuntime{
+		handler: New(cfg, authenticator, store, victoria.NewClient(), logger),
+		cfg:     cfg,
+		store:   store,
+	}
+}
+
+func (runtime *testRuntime) client(t *testing.T, email, password string) http.Handler {
+	t.Helper()
+	login := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(
+		`{"email":`+strconv.Quote(email)+`,"password":`+strconv.Quote(password)+`}`,
+	))
+	recorder := httptest.NewRecorder()
+	runtime.handler.ServeHTTP(recorder, login)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("login status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	cookies := recorder.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("login cookies = %#v", cookies)
+	}
+	sessionRequest := httptest.NewRequest(http.MethodGet, "/api/v1/session", nil)
+	sessionRequest.AddCookie(cookies[0])
+	sessionRecorder := httptest.NewRecorder()
+	runtime.handler.ServeHTTP(sessionRecorder, sessionRequest)
+	if sessionRecorder.Code != http.StatusOK {
+		t.Fatalf("session status = %d, body = %s", sessionRecorder.Code, sessionRecorder.Body.String())
+	}
+	var session struct {
+		CSRFToken string `json:"csrfToken"`
+	}
+	if err := json.Unmarshal(sessionRecorder.Body.Bytes(), &session); err != nil || session.CSRFToken == "" {
+		t.Fatalf("invalid session: %s", sessionRecorder.Body.String())
+	}
+	return authenticatedTestClient{handler: runtime.handler, cookie: cookies[0], csrf: session.CSRFToken}
 }
 
 func queryBody(query string) io.Reader {
@@ -331,5 +414,179 @@ func TestSessionReturnsOnlyAuthorizedContexts(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), `"id":"prod"`) || !strings.Contains(recorder.Body.String(), `"accountId":"12"`) {
 		t.Fatalf("missing authorized source: %s", recorder.Body.String())
+	}
+}
+
+func TestPrivateSharesRequireLoginAndEnforceUserOrTeamAudience(t *testing.T) {
+	upstream := httptest.NewServer(http.NotFoundHandler())
+	defer upstream.Close()
+	runtime := newTestRuntime(t, upstream.URL, config.LimitsConfig{})
+	creator := runtime.client(t, "tester@example.test", "correct-horse-battery")
+	tester, err := runtime.store.Authenticate(t.Context(), "tester@example.test", "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	teamID := tester.Teams[0].ID
+
+	createUser := func(email, password string, roles []string, joinTeam bool) http.Handler {
+		account, err := runtime.store.CreateUser(t.Context(), storage.CreateUserInput{
+			Email: email, Name: email, Password: password, Roles: roles,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if joinTeam {
+			if err := runtime.store.AddTeamMember(t.Context(), teamID, account.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return runtime.client(t, email, password)
+	}
+	alice := createUser("alice@example.test", "alice-secure-password", []string{"reader"}, false)
+	restricted := createUser("restricted@example.test", "restricted-password", []string{"other-role"}, false)
+	teammate := createUser("teammate@example.test", "teammate-password", []string{"reader"}, true)
+	outsider := createUser("outsider@example.test", "outsider-password", []string{"reader"}, false)
+
+	makeShare := func(client http.Handler, audience map[string]string) string {
+		t.Helper()
+		body, err := json.Marshal(map[string]any{
+			"payload": map[string]any{
+				"query": "_time:1h error", "sourceId": "prod",
+				"tenant": map[string]string{"accountId": "12", "projectId": "34", "name": "payments"},
+				"title":  "Errors", "resultMode": "table",
+			},
+			"audience": audience,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/shares", bytes.NewReader(body))
+		req.Header.Set("X-CSRF-Token", "vesta-development-csrf")
+		recorder := httptest.NewRecorder()
+		client.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusCreated {
+			t.Fatalf("create share status = %d, body = %s", recorder.Code, recorder.Body.String())
+		}
+		var response struct {
+			Token string `json:"token"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.Token == "" {
+			t.Fatalf("invalid create response: %s", recorder.Body.String())
+		}
+		return response.Token
+	}
+
+	openShare := func(client http.Handler, token string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]string{"token": token})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/shares/open", bytes.NewReader(body))
+		req.Header.Set("X-CSRF-Token", "vesta-development-csrf")
+		recorder := httptest.NewRecorder()
+		client.ServeHTTP(recorder, req)
+		return recorder
+	}
+
+	userToken := makeShare(creator, map[string]string{"type": "user", "value": "alice@example.test"})
+	if recorder := openShare(creator, userToken); recorder.Code != http.StatusForbidden {
+		t.Fatalf("wrong user opened share: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := openShare(alice, userToken); recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"_time:1h error"`) {
+		t.Fatalf("addressed user could not open share: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	restrictedToken := makeShare(creator, map[string]string{"type": "user", "value": "restricted@example.test"})
+	if recorder := openShare(restricted, restrictedToken); recorder.Code != http.StatusForbidden {
+		t.Fatalf("recipient without log access opened share: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	teamToken := makeShare(creator, map[string]string{"type": "team", "value": teamID})
+	if recorder := openShare(teammate, teamToken); recorder.Code != http.StatusOK {
+		t.Fatalf("teammate could not open share: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := openShare(outsider, teamToken); recorder.Code != http.StatusForbidden {
+		t.Fatalf("non-member opened team share: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/shares/open", strings.NewReader(`{"token":"anything"}`))
+	recorder := httptest.NewRecorder()
+	runtime.handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous share open status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestPrivateShareRejectsTeamOutsideCreatorMembership(t *testing.T) {
+	upstream := httptest.NewServer(http.NotFoundHandler())
+	defer upstream.Close()
+	runtime := newTestRuntime(t, upstream.URL, config.LimitsConfig{})
+	handler := runtime.client(t, "tester@example.test", "correct-horse-battery")
+	otherTeam, err := runtime.store.CreateTeam(t.Context(), "Other team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"payload":{"query":"_time:1h","sourceId":"prod","tenant":{"accountId":"12","projectId":"34"},"title":"Errors","resultMode":"table"},"audience":{"type":"team","value":"` + otherTeam.ID + `"}}`
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/shares", strings.NewReader(body))
+	request.Header.Set("X-CSRF-Token", "vesta-development-csrf")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestLocalDirectoryAndFolderedTeamQueries(t *testing.T) {
+	upstream := httptest.NewServer(http.NotFoundHandler())
+	defer upstream.Close()
+	runtime := newTestRuntime(t, upstream.URL, config.LimitsConfig{})
+	admin := runtime.client(t, "tester@example.test", "correct-horse-battery")
+
+	post := func(client http.Handler, path, body string, want int) []byte {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		request.Header.Set("X-CSRF-Token", "vesta-development-csrf")
+		recorder := httptest.NewRecorder()
+		client.ServeHTTP(recorder, request)
+		if recorder.Code != want {
+			t.Fatalf("%s status = %d, body = %s", path, recorder.Code, recorder.Body.String())
+		}
+		return recorder.Body.Bytes()
+	}
+
+	var member storage.User
+	if err := json.Unmarshal(post(admin, "/api/v1/admin/users", `{
+		"email":"member@example.test","name":"Member","password":"member-secure-password",
+		"roles":["reader"],"isAdmin":false
+	}`, http.StatusCreated), &member); err != nil {
+		t.Fatal(err)
+	}
+	var team storage.Team
+	if err := json.Unmarshal(post(admin, "/api/v1/admin/teams", `{"name":"On call"}`, http.StatusCreated), &team); err != nil {
+		t.Fatal(err)
+	}
+	post(admin, "/api/v1/admin/memberships", `{"userId":"`+member.ID+`","teamId":"`+team.ID+`"}`, http.StatusNoContent)
+
+	memberClient := runtime.client(t, "member@example.test", "member-secure-password")
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/admin/directory", nil)
+	recorder := httptest.NewRecorder()
+	memberClient.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("non-admin directory status = %d", recorder.Code)
+	}
+
+	var folder storage.Folder
+	if err := json.Unmarshal(post(memberClient, "/api/v1/team-folders", `{"teamId":"`+team.ID+`","name":"Incidents"}`, http.StatusCreated), &folder); err != nil {
+		t.Fatal(err)
+	}
+	post(memberClient, "/api/v1/team-queries", `{
+		"teamId":"`+team.ID+`","folderId":"`+folder.ID+`",
+		"payload":{"query":"_time:1h error","sourceId":"prod",
+		"tenant":{"accountId":"12","projectId":"34","name":"payments"},
+		"title":"Recent errors","resultMode":"table"}
+	}`, http.StatusCreated)
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/team-library", nil)
+	recorder = httptest.NewRecorder()
+	memberClient.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"name":"Incidents"`) ||
+		!strings.Contains(recorder.Body.String(), `"title":"Recent errors"`) {
+		t.Fatalf("unexpected team library: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }

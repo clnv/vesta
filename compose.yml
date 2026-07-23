@@ -16,8 +16,12 @@ services:
       dockerfile: api.Dockerfile
     depends_on:
       - victorialogs
+    environment:
+      VESTA_BOOTSTRAP_PASSWORD: integration-password
+      VESTA_SESSION_SECRET: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
     volumes:
       - ./config.compose.yml:/etc/vesta/config.yml:ro
+      - vesta-data:/var/lib/vesta
 
   vesta-web:
     image: vesta-web:local
@@ -34,3 +38,4 @@ services:
 
 volumes:
   victoria-logs-data:
+  vesta-data:

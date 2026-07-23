@@ -2,11 +2,13 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { ChevronDown, ChevronRight, Copy } from "lucide-react";
 import { useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { orderedColumns } from "../lib/format";
+import { columnsFromQuery } from "../lib/logsql";
 import type { ResultMode } from "../types";
 
 interface Props {
   rows: Record<string, unknown>[];
   mode: ResultMode;
+  query?: string;
   onCopy(value: string): void;
 }
 
@@ -32,12 +34,26 @@ function detailDisplay(value: unknown): string {
   return JSON.stringify(value, null, 2) ?? String(value);
 }
 
-export function ResultViewer({ rows, mode, onCopy }: Props) {
+function levelClass(row: Record<string, unknown>): string {
+  const level = Object.entries(row).find(([field]) => field.toLowerCase() === "level")?.[1];
+  if (typeof level !== "string") return "";
+  switch (level.trim().toLowerCase()) {
+    case "error":
+      return "level-error";
+    case "warn":
+    case "warning":
+      return "level-warn";
+    default:
+      return "";
+  }
+}
+
+export function ResultViewer({ rows, mode, query = "", onCopy }: Props) {
   const parentRef = useRef<HTMLDivElement>(null);
   const resizeRef = useRef<{ column: string; pointerId: number; startX: number; startWidth: number } | null>(null);
   const [expanded, setExpanded] = useState<ExpandedDetail | null>(null);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
-  const columns = useMemo(() => orderedColumns(rows), [rows]);
+  const columns = useMemo(() => orderedColumns(rows, columnsFromQuery(query)), [query, rows]);
   const tableGridTemplate = `${TABLE_EXPAND_COLUMN_WIDTH}px ${columns.map((column) => columnWidths[column] ? `${columnWidths[column]}px` : `minmax(${TABLE_COLUMN_MIN_WIDTH}px, 1fr)`).join(" ")}`;
   const tableWidth = `max(100%, ${TABLE_EXPAND_COLUMN_WIDTH + columns.reduce((width, column) => width + (columnWidths[column] ?? TABLE_COLUMN_MIN_WIDTH), 0)}px)`;
   const rowVirtualizer = useVirtualizer({
@@ -143,9 +159,10 @@ export function ResultViewer({ rows, mode, onCopy }: Props) {
           if (mode === "table") {
             const detail = expanded?.row === virtualRow.index ? expanded : null;
             const jsonOpen = detail?.kind === "json";
+            const severity = levelClass(row);
             return (
               <div
-                className={`table-row ${detail ? "expanded" : ""}`}
+                className={`table-row ${severity} ${detail ? "expanded" : ""}`}
                 key={virtualRow.key}
                 data-index={virtualRow.index}
                 ref={rowVirtualizer.measureElement}

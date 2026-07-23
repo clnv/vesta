@@ -41,6 +41,90 @@ export function looksUnbounded(query: string): boolean {
   return clean.includes("_time:>") || clean.includes("_time:day_range") || clean.includes("_time:week_range");
 }
 
+export function columnsFromQuery(query: string): string[] {
+  let fields: string[] = [];
+  for (const stage of pipelineStages(query).slice(1)) {
+    const match = stage.match(/^\s*(?:fields|keep)(?:\s+([\s\S]*?))?\s*$/i);
+    if (match) fields = parseFieldList(match[1] ?? "");
+  }
+  return fields;
+}
+
+function pipelineStages(query: string): string[] {
+  const stages = [""];
+  let quote = "";
+  let comment = false;
+  for (let index = 0; index < query.length; index += 1) {
+    const char = query[index];
+    if (comment) {
+      if (char === "\n") {
+        comment = false;
+        stages[stages.length - 1] += char;
+      }
+      continue;
+    }
+    if (quote) {
+      stages[stages.length - 1] += char;
+      if (char === "\\") {
+        if (index + 1 < query.length) stages[stages.length - 1] += query[++index];
+      } else if (char === quote) {
+        quote = "";
+      }
+      continue;
+    }
+    if (char === "#") {
+      comment = true;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+      stages[stages.length - 1] += char;
+    } else if (char === "|") {
+      stages.push("");
+    } else {
+      stages[stages.length - 1] += char;
+    }
+  }
+  return stages;
+}
+
+function parseFieldList(value: string): string[] {
+  const fields: string[] = [];
+  const seen = new Set<string>();
+  let field = "";
+  let quote = "";
+  const addField = () => {
+    let name = field.trim();
+    field = "";
+    if ((name.startsWith('"') && name.endsWith('"')) || (name.startsWith("'") && name.endsWith("'"))) {
+      name = name.slice(1, -1).replace(/\\(.)/g, "$1");
+    } else if (/\s/.test(name)) {
+      return;
+    }
+    if (!name || name.includes("*") || seen.has(name)) return;
+    seen.add(name);
+    fields.push(name);
+  };
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (quote) {
+      field += char;
+      if (char === "\\") {
+        if (index + 1 < value.length) field += value[++index];
+      } else if (char === quote) {
+        quote = "";
+      }
+    } else if (char === '"' || char === "'") {
+      quote = char;
+      field += char;
+    } else if (char === ",") {
+      addField();
+    } else {
+      field += char;
+    }
+  }
+  addField();
+  return fields;
+}
+
 function stripCommentsAndStrings(query: string): string {
   let clean = "";
   for (let index = 0; index < query.length; ) {
@@ -95,4 +179,3 @@ function findTopLevelPipe(query: string): number {
 export function quoteLogSQLValue(value: string): string {
   return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
-

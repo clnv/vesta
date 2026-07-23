@@ -9,6 +9,7 @@ import (
 
 	"github.com/vesta-explorer/vesta/internal/auth"
 	"github.com/vesta-explorer/vesta/internal/config"
+	"github.com/vesta-explorer/vesta/internal/storage"
 	"github.com/vesta-explorer/vesta/internal/victoria"
 )
 
@@ -16,6 +17,7 @@ type Server struct {
 	cfg     *config.Config
 	auth    *auth.Authenticator
 	vlogs   *victoria.Client
+	store   *storage.Store
 	logger  *slog.Logger
 	gate    *concurrencyGate
 	metrics *metrics
@@ -40,23 +42,34 @@ type sourceView struct {
 	Tenants []config.Tenant `json:"tenants"`
 }
 
-func New(cfg *config.Config, authenticator *auth.Authenticator, client *victoria.Client, logger *slog.Logger) http.Handler {
+func New(cfg *config.Config, authenticator *auth.Authenticator, store *storage.Store, client *victoria.Client, logger *slog.Logger) http.Handler {
 	s := &Server{
-		cfg: cfg, auth: authenticator, vlogs: client, logger: logger,
+		cfg: cfg, auth: authenticator, store: store, vlogs: client, logger: logger,
 		gate:    newConcurrencyGate(cfg.Limits.MaxQueriesPerUser, cfg.Limits.MaxTailsPerUser),
 		metrics: &metrics{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /metrics", s.metrics.handler)
-	mux.HandleFunc("GET /auth/login", authenticator.Login)
-	mux.HandleFunc("GET /auth/callback", authenticator.Callback)
+	mux.HandleFunc("POST /auth/login", authenticator.Login)
 	mux.HandleFunc("GET /auth/logout", authenticator.Logout)
 	mux.Handle("GET /api/v1/session", s.withUser(http.HandlerFunc(s.handleSession)))
+	mux.Handle("POST /api/v1/account/password", s.withUser(http.HandlerFunc(s.handleChangePassword)))
 	mux.Handle("POST /api/v1/query", s.withUser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.handleStream(w, r, false) })))
 	mux.Handle("POST /api/v1/tail", s.withUser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.handleStream(w, r, true) })))
 	mux.Handle("POST /api/v1/fields", s.withUser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.handleMetadata(w, r, false) })))
 	mux.Handle("POST /api/v1/field-values", s.withUser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.handleMetadata(w, r, true) })))
+	mux.Handle("POST /api/v1/shares", s.withUser(http.HandlerFunc(s.handleCreateShare)))
+	mux.Handle("POST /api/v1/shares/open", s.withUser(http.HandlerFunc(s.handleOpenShare)))
+	mux.Handle("GET /api/v1/team-library", s.withUser(http.HandlerFunc(s.handleTeamLibrary)))
+	mux.Handle("POST /api/v1/team-folders", s.withUser(http.HandlerFunc(s.handleCreateFolder)))
+	mux.Handle("POST /api/v1/team-queries", s.withUser(http.HandlerFunc(s.handleCreateTeamQuery)))
+	mux.Handle("DELETE /api/v1/team-queries/{id}", s.withUser(http.HandlerFunc(s.handleDeleteTeamQuery)))
+	mux.Handle("GET /api/v1/admin/directory", s.withUser(s.adminOnly(http.HandlerFunc(s.handleDirectory))))
+	mux.Handle("POST /api/v1/admin/users", s.withUser(s.adminOnly(http.HandlerFunc(s.handleCreateUser))))
+	mux.Handle("POST /api/v1/admin/teams", s.withUser(s.adminOnly(http.HandlerFunc(s.handleCreateTeam))))
+	mux.Handle("POST /api/v1/admin/memberships", s.withUser(s.adminOnly(http.HandlerFunc(s.handleAddMembership))))
+	mux.Handle("DELETE /api/v1/admin/memberships", s.withUser(s.adminOnly(http.HandlerFunc(s.handleDeleteMembership))))
 	return securityHeaders(mux)
 }
 
@@ -75,8 +88,22 @@ func (s *Server) withUser(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) adminOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !auth.MustUser(r.Context()).IsAdmin {
+			writeJSONError(w, http.StatusForbidden, "administrator access required")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	user := auth.MustUser(r.Context())
+	teams := slices.Clone(user.Teams)
+	if teams == nil {
+		teams = []auth.Team{}
+	}
 	sources := make([]sourceView, 0, len(s.cfg.Sources))
 	for _, source := range s.cfg.Sources {
 		if !hasAnyRole(user.Roles, source.Roles) {
@@ -93,7 +120,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user":      map[string]any{"subject": user.Subject, "email": user.Email, "name": user.Name},
+		"user":      map[string]any{"subject": user.Subject, "email": user.Email, "name": user.Name, "teams": teams, "isAdmin": user.IsAdmin},
 		"sources":   sources,
 		"csrfToken": user.CSRF,
 		"limits": map[string]any{

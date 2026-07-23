@@ -3,18 +3,20 @@ server:
   external_url: "https://logs.example.com"
 
 auth:
-  dev_mode: false
-  issuer_url: "https://identity.example.com"
-  client_id: "vesta"
-  client_secret_env: "VESTA_OIDC_CLIENT_SECRET"
-  redirect_url: "https://logs.example.com/auth/callback"
-  scopes: ["openid", "profile", "email", "groups"]
-  groups_claim: "groups"
-  group_role_map:
-    "platform-oncall": ["prod-reader", "staging-reader"]
-    "application-developers": ["staging-reader"]
   session_secret_env: "VESTA_SESSION_SECRET"
   session_ttl: "1h"
+  # Used only when the SQLite database has no users.
+  bootstrap:
+    email: "admin@example.com"
+    name: "Vesta administrator"
+    password_env: "VESTA_BOOTSTRAP_PASSWORD"
+    team: "Platform"
+    roles: ["prod-reader"]
+
+storage:
+  path: "/var/lib/vesta/vesta.db"
+  # Expiring private links use this lifetime; accounts and team-library queries persist.
+  share_ttl: "168h"
 
 limits:
   query_timeout: "30s"
@@ -38,4 +40,3 @@ sources:
       type: "bearer"
       token_env: "VESTA_PRODUCTION_TOKEN"
     hidden_fields: ["password*", "authorization", "session_token"]
-

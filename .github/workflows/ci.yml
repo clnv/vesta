@@ -132,7 +132,7 @@ jobs:
           helm template features ./charts/vesta
           --set secret.create=true
           --set-string secret.data.VESTA_SESSION_SECRET=test-only
-          --set autoscaling.enabled=true
+          --set persistence.enabled=false
           --set ingress.enabled=true
           --set podDisruptionBudget.enabled=true
           > /tmp/vesta-features.yaml
@@ -140,7 +140,9 @@ jobs:
         run: >-
           helm template existing ./charts/vesta
           --set config.existingConfigMap=vesta-config
+          --set secret.create=false
           --set secret.existingSecret=vesta-secret
+          --set persistence.existingClaim=vesta-data
           --set serviceAccount.create=false
           --set serviceAccount.name=vesta-runtime
           > /tmp/vesta-existing.yaml

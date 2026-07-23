@@ -31,7 +31,9 @@ helm-lint:
 dev:
     {{dev_compose}} up --detach --no-recreate
     @zellij delete-session --force vesta >/dev/null 2>&1 || true
-    zellij --layout .zellij/dev.kdl attach --create vesta
+    VESTA_SESSION_SECRET="${VESTA_SESSION_SECRET:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}" \
+      VESTA_BOOTSTRAP_PASSWORD="${VESTA_BOOTSTRAP_PASSWORD:-vesta-local-password}" \
+      zellij --layout .zellij/dev.kdl attach --create vesta
 
 # Force-recreate the local VictoriaLogs and fake-log containers.
 dev-services-restart:

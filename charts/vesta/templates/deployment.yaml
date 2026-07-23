@@ -1,6 +1,12 @@
 {{- if and .Values.secret.create .Values.secret.existingSecret }}
 {{- fail "secret.create and secret.existingSecret are mutually exclusive" }}
 {{- end }}
+{{- if .Values.autoscaling.enabled }}
+{{- fail "autoscaling is not supported with the local SQLite user directory" }}
+{{- end }}
+{{- if ne (int .Values.replicaCount) 1 }}
+{{- fail "replicaCount must be 1 with the local SQLite user directory" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8,6 +14,10 @@ metadata:
   labels:
     {{- include "vesta.labels" . | nindent 4 }}
 spec:
+  {{- if .Values.persistence.enabled }}
+  strategy:
+    type: Recreate
+  {{- end }}
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
@@ -85,6 +95,8 @@ spec:
               mountPath: /etc/vesta/config.yml
               subPath: config.yml
               readOnly: true
+            - name: data
+              mountPath: /var/lib/vesta
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -112,6 +124,13 @@ spec:
         - name: config
           configMap:
             name: {{ include "vesta.configMapName" . }}
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "vesta.persistentVolumeClaimName" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
       {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
       {{- end }}

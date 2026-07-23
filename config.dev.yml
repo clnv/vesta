@@ -1,11 +1,11 @@
 server:
   listen: ":8080"
-  external_url: "http://localhost:8080"
+  # Browser requests originate from Vite during local development.
+  external_url: "http://localhost:5173"
 
 auth:
   session_secret_env: "VESTA_SESSION_SECRET"
   session_ttl: "1h"
-  # Used only when the SQLite database has no users.
   bootstrap:
     email: "admin@localhost"
     name: "Local administrator"

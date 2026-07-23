@@ -87,6 +87,8 @@ podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65532
   runAsGroup: 65532
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
   seccompProfile:
     type: RuntimeDefault
 
@@ -113,6 +115,15 @@ ingress:
           pathType: Prefix
   tls: []
 
+persistence:
+  enabled: true
+  existingClaim: ""
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+  annotations: {}
+
 config:
   # When set, this ConfigMap must contain a config.yml key. config.data is ignored.
   existingConfigMap: ""
@@ -121,16 +132,18 @@ config:
       listen: ":8080"
       external_url: "http://localhost:8080"
     auth:
-      # Safe only for local development or port-forwarding. Use OIDC in production.
-      dev_mode: true
-      dev_user:
-        subject: local-developer
-        email: developer@localhost
-        name: Local developer
-        roles:
-          - reader
       session_secret_env: VESTA_SESSION_SECRET
       session_ttl: 1h
+      bootstrap:
+        email: admin@localhost
+        name: Local administrator
+        password_env: VESTA_BOOTSTRAP_PASSWORD
+        team: Local
+        roles:
+          - reader
+    storage:
+      path: /var/lib/vesta/vesta.db
+      share_ttl: 168h
     limits:
       query_timeout: 30s
       max_rows: 50000
@@ -155,14 +168,12 @@ config:
 secret:
   # Prefer existingSecret in production. Its keys are exposed to Vesta as env vars.
   existingSecret: ""
-  create: false
+  # Development-only defaults so a local Helm install can sign in immediately.
+  create: true
   annotations: {}
-  data: {}
-  # Example only:
-  # data:
-  #   VESTA_SESSION_SECRET: "base64-encoded-32-byte-session-key"
-  #   VESTA_OIDC_CLIENT_SECRET: "client-secret"
-  #   VESTA_PRODUCTION_TOKEN: "victorialogs-token"
+  data:
+    VESTA_SESSION_SECRET: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+    VESTA_BOOTSTRAP_PASSWORD: "vesta-local-password"
 
 extraEnv: []
 extraEnvFrom: []

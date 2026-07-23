@@ -1,4 +1,5 @@
 import type { ResultMode } from "../types";
+import { columnsFromQuery } from "./logsql";
 
 const MAX_CLIPBOARD_BYTES = 5 << 20;
 
@@ -9,13 +10,16 @@ interface ShareBundleOptions {
   mode: ResultMode;
 }
 
-export function orderedColumns(rows: Record<string, unknown>[]): string[] {
+export function orderedColumns(rows: Record<string, unknown>[], preferred: string[] = []): string[] {
   const found = new Set<string>();
   for (const row of rows.slice(0, 500)) Object.keys(row).forEach((key) => found.add(key));
-  return [...found].sort((a, b) => {
+  const requested = preferred.filter((column, index) => column && preferred.indexOf(column) === index);
+  const requestedSet = new Set(requested);
+  const remaining = [...found].filter((column) => !requestedSet.has(column)).sort((a, b) => {
     const priority = (value: string) => value === "_time" ? 0 : value === "_msg" ? 1 : 2;
     return priority(a) - priority(b) || a.localeCompare(b);
   });
+  return [...requested, ...remaining];
 }
 
 function tsvCell(value: unknown): string {
@@ -28,19 +32,28 @@ function csvCell(value: unknown): string {
   return /[,\n\r"]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 
-export function formatRows(rows: Record<string, unknown>[], mode: ResultMode, format: "clipboard" | "csv" | "ndjson" = "clipboard"): string {
+export function formatRows(
+  rows: Record<string, unknown>[],
+  mode: ResultMode,
+  format: "clipboard" | "csv" | "ndjson" = "clipboard",
+  preferredColumns: string[] = [],
+): string {
   if (format === "ndjson" || (format === "clipboard" && mode !== "table")) {
     return rows.map((row) => JSON.stringify(row)).join("\n");
   }
-  const columns = orderedColumns(rows);
+  const columns = orderedColumns(rows, preferredColumns);
   const delimiter = format === "csv" ? "," : "\t";
   const cell = format === "csv" ? csvCell : tsvCell;
   return [columns.join(delimiter), ...rows.map((row) => columns.map((column) => cell(row[column])).join(delimiter))].join("\n");
 }
 
-function clipboardSelection(rows: Record<string, unknown>[], mode: ResultMode): { rows: Record<string, unknown>[]; text: string; truncated: boolean } {
+function clipboardSelection(
+  rows: Record<string, unknown>[],
+  mode: ResultMode,
+  preferredColumns: string[] = [],
+): { rows: Record<string, unknown>[]; text: string; truncated: boolean } {
   const encoder = new TextEncoder();
-  const text = formatRows(rows, mode);
+  const text = formatRows(rows, mode, "clipboard", preferredColumns);
   if (encoder.encode(text).byteLength <= MAX_CLIPBOARD_BYTES) {
     return { rows, text, truncated: false };
   }
@@ -48,15 +61,15 @@ function clipboardSelection(rows: Record<string, unknown>[], mode: ResultMode): 
   let high = rows.length;
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    if (encoder.encode(formatRows(rows.slice(0, middle), mode)).byteLength <= MAX_CLIPBOARD_BYTES) low = middle;
+    if (encoder.encode(formatRows(rows.slice(0, middle), mode, "clipboard", preferredColumns)).byteLength <= MAX_CLIPBOARD_BYTES) low = middle;
     else high = middle - 1;
   }
   const selectedRows = rows.slice(0, low);
-  return { rows: selectedRows, text: formatRows(selectedRows, mode), truncated: true };
+  return { rows: selectedRows, text: formatRows(selectedRows, mode, "clipboard", preferredColumns), truncated: true };
 }
 
-export function clipboardRows(rows: Record<string, unknown>[], mode: ResultMode): { text: string; truncated: boolean } {
-  const selection = clipboardSelection(rows, mode);
+export function clipboardRows(rows: Record<string, unknown>[], mode: ResultMode, preferredColumns: string[] = []): { text: string; truncated: boolean } {
+  const selection = clipboardSelection(rows, mode, preferredColumns);
   return { text: selection.text, truncated: selection.truncated };
 }
 
@@ -115,19 +128,20 @@ function htmlCell(value: unknown): string {
   return escapeHTML(typeof value === "string" ? value : JSON.stringify(value));
 }
 
-function resultsHTML(rows: Record<string, unknown>[], mode: ResultMode): string {
+function resultsHTML(rows: Record<string, unknown>[], mode: ResultMode, preferredColumns: string[] = []): string {
   if (mode === "json") {
     const ndjson = rows.map((row) => JSON.stringify(row)).join("\n");
     return `<pre style="margin:0;padding:12px;border:1px solid #d1d5db;border-radius:6px;background:#f8fafc;color:#111827;font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere">${escapeHTML(ndjson)}</pre>`;
   }
-  const columns = orderedColumns(rows);
+  const columns = orderedColumns(rows, preferredColumns);
   const header = columns.map((column) => `<th style="padding:7px 9px;border:1px solid #cbd5e1;background:#f1f5f9;color:#334155;font:600 12px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;text-align:left">${escapeHTML(column)}</th>`).join("");
   const body = rows.map((row) => `<tr>${columns.map((column) => `<td style="padding:7px 9px;border:1px solid #d1d5db;color:#111827;font:12px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;text-align:left;vertical-align:top;white-space:pre-wrap;overflow-wrap:anywhere">${htmlCell(row[column])}</td>`).join("")}</tr>`).join("");
   return `<table style="border-collapse:collapse;border-spacing:0"><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
 export function shareBundle({ query, link, rows, mode }: ShareBundleOptions): { text: string; html: string; truncated: boolean } {
-  const results = clipboardSelection(rows, mode);
+  const preferredColumns = columnsFromQuery(query);
+  const results = clipboardSelection(rows, mode, preferredColumns);
   const resultLabel = results.truncated ? `Results (excerpt of ${rows.length.toLocaleString()} rows):` : `Results (${rows.length.toLocaleString()} rows):`;
   const markdownResultLabel = results.truncated ? `Results: excerpt of ${rows.length.toLocaleString()} rows` : `Results: ${rows.length.toLocaleString()} rows`;
   const safeLink = escapeHTML(link);
@@ -146,7 +160,7 @@ export function shareBundle({ query, link, rows, mode }: ShareBundleOptions): { 
       `<p style="margin:0 0 8px"><a href="${safeLink}" style="color:#2563eb;font-weight:700;text-decoration:underline">[Query]</a></p>`,
       `<a href="${safeLink}" style="color:inherit;text-decoration:none"><pre style="margin:0 0 14px;padding:12px;border:1px solid #d1d5db;border-radius:6px;background:#f8fafc;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere"><code>${highlightLogSQL(query)}</code></pre></a>`,
       `<p style="margin:0 0 6px;color:#334155;font-weight:700">${richResultLabel}</p>`,
-      resultsHTML(results.rows, mode),
+      resultsHTML(results.rows, mode, preferredColumns),
       "</div>",
     ].join(""),
     truncated: results.truncated,

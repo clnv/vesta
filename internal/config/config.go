@@ -16,6 +16,7 @@ import (
 type Config struct {
 	Server  ServerConfig   `yaml:"server"`
 	Auth    AuthConfig     `yaml:"auth"`
+	Storage StorageConfig  `yaml:"storage"`
 	Limits  LimitsConfig   `yaml:"limits"`
 	Sources []SourceConfig `yaml:"sources"`
 }
@@ -26,24 +27,22 @@ type ServerConfig struct {
 }
 
 type AuthConfig struct {
-	DevMode          bool                `yaml:"dev_mode"`
-	DevUser          DevUserConfig       `yaml:"dev_user"`
-	IssuerURL        string              `yaml:"issuer_url"`
-	ClientID         string              `yaml:"client_id"`
-	ClientSecretEnv  string              `yaml:"client_secret_env"`
-	RedirectURL      string              `yaml:"redirect_url"`
-	Scopes           []string            `yaml:"scopes"`
-	GroupsClaim      string              `yaml:"groups_claim"`
-	GroupRoleMap     map[string][]string `yaml:"group_role_map"`
 	SessionSecretEnv string              `yaml:"session_secret_env"`
 	SessionTTL       Duration            `yaml:"session_ttl"`
+	Bootstrap        BootstrapUserConfig `yaml:"bootstrap"`
 }
 
-type DevUserConfig struct {
-	Subject string   `yaml:"subject"`
-	Email   string   `yaml:"email"`
-	Name    string   `yaml:"name"`
-	Roles   []string `yaml:"roles"`
+type StorageConfig struct {
+	Path     string   `yaml:"path"`
+	ShareTTL Duration `yaml:"share_ttl"`
+}
+
+type BootstrapUserConfig struct {
+	Email       string   `yaml:"email"`
+	Name        string   `yaml:"name"`
+	PasswordEnv string   `yaml:"password_env"`
+	Team        string   `yaml:"team"`
+	Roles       []string `yaml:"roles"`
 }
 
 type LimitsConfig struct {
@@ -112,17 +111,32 @@ func applyDefaults(cfg *Config) {
 	if cfg.Server.Listen == "" {
 		cfg.Server.Listen = ":8080"
 	}
-	if cfg.Auth.GroupsClaim == "" {
-		cfg.Auth.GroupsClaim = "groups"
-	}
-	if len(cfg.Auth.Scopes) == 0 {
-		cfg.Auth.Scopes = []string{"openid", "profile", "email", "groups"}
-	}
 	if cfg.Auth.SessionSecretEnv == "" {
 		cfg.Auth.SessionSecretEnv = "VESTA_SESSION_SECRET"
 	}
 	if cfg.Auth.SessionTTL.Duration == 0 {
 		cfg.Auth.SessionTTL.Duration = time.Hour
+	}
+	if cfg.Auth.Bootstrap.Email == "" {
+		cfg.Auth.Bootstrap.Email = "admin@localhost"
+	}
+	if cfg.Auth.Bootstrap.Name == "" {
+		cfg.Auth.Bootstrap.Name = "Administrator"
+	}
+	if cfg.Auth.Bootstrap.PasswordEnv == "" {
+		cfg.Auth.Bootstrap.PasswordEnv = "VESTA_BOOTSTRAP_PASSWORD"
+	}
+	if cfg.Auth.Bootstrap.Team == "" {
+		cfg.Auth.Bootstrap.Team = "Administrators"
+	}
+	if len(cfg.Auth.Bootstrap.Roles) == 0 {
+		cfg.Auth.Bootstrap.Roles = []string{"reader"}
+	}
+	if cfg.Storage.Path == "" {
+		cfg.Storage.Path = "data/vesta.db"
+	}
+	if cfg.Storage.ShareTTL.Duration == 0 {
+		cfg.Storage.ShareTTL.Duration = 7 * 24 * time.Hour
 	}
 	if cfg.Limits.QueryTimeout.Duration == 0 {
 		cfg.Limits.QueryTimeout.Duration = 30 * time.Second
@@ -142,9 +156,6 @@ func applyDefaults(cfg *Config) {
 	if cfg.Limits.MaxLineBytes == 0 {
 		cfg.Limits.MaxLineBytes = 8 << 20
 	}
-	if cfg.Auth.DevUser.Subject == "" {
-		cfg.Auth.DevUser = DevUserConfig{Subject: "dev-user", Email: "dev@localhost", Name: "Developer", Roles: []string{"dev"}}
-	}
 }
 
 func (cfg *Config) Validate() error {
@@ -158,37 +169,30 @@ func (cfg *Config) Validate() error {
 	if err != nil || !slices.Contains([]string{"http", "https"}, ext.Scheme) || ext.Host == "" {
 		return errors.New("server.external_url must be an absolute HTTP(S) URL")
 	}
-	if !cfg.Auth.DevMode {
-		if ext.Scheme != "https" {
-			return errors.New("server.external_url must use HTTPS when dev_mode is false")
-		}
-		if cfg.Auth.IssuerURL == "" || cfg.Auth.ClientID == "" || cfg.Auth.ClientSecretEnv == "" || cfg.Auth.RedirectURL == "" {
-			return errors.New("auth issuer_url, client_id, client_secret_env, and redirect_url are required when dev_mode is false")
-		}
-		issuer, issuerErr := url.Parse(cfg.Auth.IssuerURL)
-		redirect, redirectErr := url.Parse(cfg.Auth.RedirectURL)
-		if issuerErr != nil || issuer.Scheme != "https" || issuer.Host == "" {
-			return errors.New("auth.issuer_url must be an absolute HTTPS URL")
-		}
-		if redirectErr != nil || !slices.Contains([]string{"http", "https"}, redirect.Scheme) || redirect.Host == "" {
-			return errors.New("auth.redirect_url must be an absolute HTTP(S) URL")
-		}
-		if !strings.EqualFold(redirect.Scheme, ext.Scheme) || !strings.EqualFold(redirect.Host, ext.Host) {
-			return errors.New("auth.redirect_url must use the same origin as server.external_url")
-		}
-		if os.Getenv(cfg.Auth.ClientSecretEnv) == "" {
-			return fmt.Errorf("environment variable %s is required", cfg.Auth.ClientSecretEnv)
+	if !strings.Contains(cfg.Auth.Bootstrap.Email, "@") || len(cfg.Auth.Bootstrap.Email) > 320 {
+		return errors.New("auth.bootstrap.email must be a valid email address")
+	}
+	if strings.TrimSpace(cfg.Auth.Bootstrap.Name) == "" || cfg.Auth.Bootstrap.PasswordEnv == "" || strings.TrimSpace(cfg.Auth.Bootstrap.Team) == "" {
+		return errors.New("auth.bootstrap name, password_env, and team are required")
+	}
+	for _, role := range cfg.Auth.Bootstrap.Roles {
+		if strings.TrimSpace(role) == "" {
+			return errors.New("auth.bootstrap.roles cannot contain an empty role")
 		}
 	}
 	secret := os.Getenv(cfg.Auth.SessionSecretEnv)
-	if secret == "" && !cfg.Auth.DevMode {
+	if secret == "" {
 		return fmt.Errorf("environment variable %s is required", cfg.Auth.SessionSecretEnv)
 	}
-	if secret != "" {
-		decoded, decodeErr := base64.StdEncoding.DecodeString(secret)
-		if decodeErr != nil || len(decoded) < 32 {
-			return fmt.Errorf("%s must contain at least 32 base64-encoded bytes", cfg.Auth.SessionSecretEnv)
-		}
+	decoded, decodeErr := base64.StdEncoding.DecodeString(secret)
+	if decodeErr != nil || len(decoded) < 32 {
+		return fmt.Errorf("%s must contain at least 32 base64-encoded bytes", cfg.Auth.SessionSecretEnv)
+	}
+	if strings.TrimSpace(cfg.Storage.Path) == "" {
+		return errors.New("storage.path is required")
+	}
+	if cfg.Storage.ShareTTL.Duration < 0 {
+		return errors.New("storage.share_ttl must be greater than zero")
 	}
 
 	ids := map[string]struct{}{}
@@ -263,14 +267,11 @@ func validateUpstreamAuth(source SourceConfig) error {
 }
 
 func (cfg *Config) SessionSecret() []byte {
-	if value := os.Getenv(cfg.Auth.SessionSecretEnv); value != "" {
-		decoded, _ := base64.StdEncoding.DecodeString(value)
-		return decoded
-	}
-	return []byte("vesta-development-session-secret-change-me")
+	decoded, _ := base64.StdEncoding.DecodeString(os.Getenv(cfg.Auth.SessionSecretEnv))
+	return decoded
 }
 
-func (cfg *Config) ClientSecret() string { return os.Getenv(cfg.Auth.ClientSecretEnv) }
+func (cfg *Config) BootstrapPassword() string { return os.Getenv(cfg.Auth.Bootstrap.PasswordEnv) }
 
 func (source SourceConfig) Credentials() (username, password, token string) {
 	return os.Getenv(source.Auth.UsernameEnv), os.Getenv(source.Auth.PasswordEnv), os.Getenv(source.Auth.TokenEnv)
