@@ -1,32 +1,35 @@
 import {
   Braces, ChevronDown, CircleStop, Copy, Download, FileJson, History, KeyRound, LogOut,
-  Moon, Play, Radio, Share2, Sun, Table2, TerminalSquare, Users, X,
+  Moon, Play, Radio, Share2, Star, Sun, Table2, TerminalSquare, Users, X,
 } from "lucide-react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AccessManagementPage } from "./components/AccessManagementPage";
+import { FolderDialog } from "./components/FolderDialog";
 import { PasswordPanel } from "./components/PasswordPanel";
 import { QueryEditor, type QueryEditorHandle } from "./components/QueryEditor";
 import { ResultViewer } from "./components/ResultViewer";
 import { Sidebar } from "./components/Sidebar";
 import { TabBar } from "./components/TabBar";
 import {
-  APIError, createShare, createTeamFolder, createTeamQuery, fetchFields, getSession,
-  getTeamLibrary, login, openShare, streamQuery,
+  APIError, createShare, createTeamFolder, createTeamQuery, getSession,
+  getTeamLibrary, login, openShare, streamQuery, updateTeamQuery,
 } from "./lib/api";
 import { clipboardRows, formatRows, shareBundle } from "./lib/format";
-import { columnsFromQuery, DEFAULT_QUERY, hasTimeFilter, insertFilter, quoteLogSQLValue } from "./lib/logsql";
+import { columnsFromQuery, DEFAULT_QUERY, hasTimeFilter } from "./lib/logsql";
 import { appendToRing } from "./lib/ring";
 import { clearHistory as clearStoredHistory, loadWorkspace, saveWorkspace } from "./lib/storage";
 import { privateShareURL, sharedTabId, shareTokenFromHash } from "./lib/share";
+import { tabFromTeamStar } from "./lib/teamStars";
 import type {
-  ExplorerTab, FieldValue, HistoryEntry, PersistedTab, RunStatus, Session, ShareAudience,
+  ExplorerTab, HistoryEntry, PersistedTab, RunStatus, Session, ShareAudience,
   SharePayload, StreamEvent, TeamLibrary, TeamQuery, Tenant,
 } from "./types";
 
 type Theme = "light" | "dark";
 type AppRoute = "explorer" | "admin-access";
 type SessionState = { kind: "loading" } | { kind: "signed-out" } | { kind: "ready"; session: Session } | { kind: "error"; message: string };
+const EMPTY_EDITOR_FIELDS: string[] = [];
 
 function currentRoute(): AppRoute {
   return window.location.pathname === "/admin/access" ? "admin-access" : "explorer";
@@ -82,22 +85,25 @@ export default function App() {
   const [activeId, setActiveId] = useState("");
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
   const [workspaceReady, setWorkspaceReady] = useState(false);
-  const [sidebarMode, setSidebarMode] = useState<"fields" | "history" | "shared">("fields");
-  const [fields, setFields] = useState<FieldValue[]>([]);
-  const [values, setValues] = useState<FieldValue[]>([]);
-  const [selectedField, setSelectedField] = useState("");
-  const [metadataLoading, setMetadataLoading] = useState(false);
+  const [sidebarMode, setSidebarMode] = useState<"history" | "stars">("history");
   const [shareOpen, setShareOpen] = useState(false);
   const [shareAudience, setShareAudience] = useState<ShareAudience["type"]>("user");
   const [shareTarget, setShareTarget] = useState("");
-  const [shareFolder, setShareFolder] = useState("");
+  const [starOpen, setStarOpen] = useState(false);
+  const [starName, setStarName] = useState("");
+  const [starTeam, setStarTeam] = useState("");
+  const [starFolder, setStarFolder] = useState("");
   const [teamLibraries, setTeamLibraries] = useState<TeamLibrary[]>([]);
+  const [folderDialogTeam, setFolderDialogTeam] = useState("");
+  const [folderCreating, setFolderCreating] = useState(false);
+  const [folderCreateError, setFolderCreateError] = useState("");
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [route, setRoute] = useState<AppRoute>(currentRoute);
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("vesta-theme") as Theme) || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
   const editorRef = useRef<QueryEditorHandle>(null);
+  const folderTriggerRef = useRef<HTMLElement | null>(null);
   const controllers = useRef(new Map<string, AbortController>());
 
   const session = sessionState.kind === "ready" ? sessionState.session : null;
@@ -118,6 +124,7 @@ export default function App() {
     window.history.pushState({ vestaFromExplorer: true }, "", "/admin/access");
     setRoute(currentRoute());
     setShareOpen(false);
+    setStarOpen(false);
     setExportOpen(false);
   }, []);
 
@@ -186,6 +193,7 @@ export default function App() {
         setHistoryEntries(restored.history.filter((entry) => isContextAllowed(currentSession, entry.sourceId, entry.tenant)).slice(0, 100));
         setTeamLibraries(libraries);
         setShareTarget(currentSession.user.email);
+        setStarTeam(currentSession.user.teams?.[0]?.id ?? "");
         setSessionState({ kind: "ready", session: currentSession });
         setWorkspaceReady(true);
       } catch (error) {
@@ -203,12 +211,6 @@ export default function App() {
     }, 250);
     return () => window.clearTimeout(timeout);
   }, [activeId, historyEntries, tabs, workspaceReady]);
-
-  useEffect(() => {
-    setFields([]);
-    setValues([]);
-    setSelectedField("");
-  }, [activeId]);
 
   useEffect(() => {
     if (!toast) return;
@@ -313,39 +315,6 @@ export default function App() {
     controllers.current.delete(id);
     updateTab(id, { status: "cancelled" });
   }, [updateTab]);
-
-  const refreshFields = async () => {
-    if (!session || !activeTab || !hasTimeFilter(activeTab.query) || activeTab.contextError) return;
-    setMetadataLoading(true);
-    try {
-      const result = await fetchFields({ sourceId: activeTab.sourceId, tenant: activeTab.tenant, query: activeTab.query }, session.csrfToken);
-      setFields(result);
-      setSelectedField("");
-      setValues([]);
-    } catch (error) {
-      setToast(error instanceof Error ? error.message : "Could not load fields");
-    } finally {
-      setMetadataLoading(false);
-    }
-  };
-
-  const openField = async (field: string) => {
-    if (!field) {
-      setSelectedField("");
-      setValues([]);
-      return;
-    }
-    if (!session || !activeTab) return;
-    setSelectedField(field);
-    setMetadataLoading(true);
-    try {
-      setValues(await fetchFields({ sourceId: activeTab.sourceId, tenant: activeTab.tenant, query: activeTab.query }, session.csrfToken, field));
-    } catch (error) {
-      setToast(error instanceof Error ? error.message : "Could not load field values");
-    } finally {
-      setMetadataLoading(false);
-    }
-  };
 
   const addTab = () => {
     if (!session) return;
@@ -497,7 +466,6 @@ export default function App() {
   const recall = (entry: HistoryEntry) => {
     if (!activeTab || !session || !isContextAllowed(session, entry.sourceId, entry.tenant)) return;
     updateTab(activeTab.id, { query: entry.query, sourceId: entry.sourceId, tenant: entry.tenant, protected: false, contextError: undefined });
-    setSidebarMode("fields");
     editorRef.current?.focus();
   };
 
@@ -511,7 +479,7 @@ export default function App() {
     try {
       setTeamLibraries(await getTeamLibrary());
     } catch (error) {
-      setToast(error instanceof Error ? error.message : "Team queries could not be loaded");
+      setToast(error instanceof Error ? error.message : "Team stars could not be loaded");
     }
   };
 
@@ -521,6 +489,7 @@ export default function App() {
       setSessionState({ kind: "ready", session: currentSession });
       setTeamLibraries(libraries);
       setShareTarget((current) => current === session?.user.email ? currentSession.user.email : current);
+      setStarTeam((current) => currentSession.user.teams.some((team) => team.id === current) ? current : currentSession.user.teams[0]?.id ?? "");
       setTabs((current) => current.map((tab) => isContextAllowed(currentSession, tab.sourceId, tab.tenant)
         ? { ...tab, contextError: undefined }
         : { ...tab, contextError: "This source or tenant is no longer authorized." }));
@@ -530,65 +499,91 @@ export default function App() {
     }
   };
 
-  const createFolder = async (teamId: string) => {
-    if (!session) return;
-    const name = window.prompt("Folder name");
-    if (!name?.trim()) return;
+  const openFolderDialog = (teamId: string) => {
+    folderTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setFolderCreateError("");
+    setFolderDialogTeam(teamId);
+  };
+
+  const closeFolderDialog = () => {
+    setFolderDialogTeam("");
+    setFolderCreateError("");
+    requestAnimationFrame(() => folderTriggerRef.current?.focus());
+  };
+
+  const createFolder = async (name: string) => {
+    if (!session || !folderDialogTeam) return;
+    setFolderCreating(true);
+    setFolderCreateError("");
     try {
-      await createTeamFolder(teamId, name, session.csrfToken);
+      await createTeamFolder(folderDialogTeam, name, session.csrfToken);
       await refreshTeamLibrary();
       setToast("Team folder created");
+      closeFolderDialog();
     } catch (error) {
-      setToast(error instanceof Error ? error.message : "Team folder could not be created");
+      setFolderCreateError(error instanceof Error ? error.message : "Team folder could not be created");
+    } finally {
+      setFolderCreating(false);
     }
   };
 
-  const recallTeamQuery = (item: TeamQuery) => {
-    if (!activeTab || !session) return;
+  const openTeamStar = (item: TeamQuery) => {
+    if (!session) return;
     const tenant = { accountId: item.tenantAccountId, projectId: item.tenantProjectId, name: item.tenantName };
     if (!isContextAllowed(session, item.sourceId, tenant)) {
       setToast("You are not authorized for this query’s source or tenant.");
       return;
     }
-    updateTab(activeTab.id, {
-      title: item.title,
-      query: item.query,
-      sourceId: item.sourceId,
-      tenant,
-      resultMode: item.resultMode,
-      protected: true,
-      contextError: undefined,
-    });
-    setSidebarMode("fields");
-    editorRef.current?.focus();
+    const tab = tabFromTeamStar(item);
+    setTabs((current) => [...current, tab]);
+    setActiveId(tab.id);
+    setToast(`Opened an editable copy of “${item.title}”`);
   };
 
-  const saveToTeamLibrary = async () => {
+  const editTeamStar = async (item: TeamQuery, title: string, folderId: string): Promise<boolean> => {
+    if (!session) return false;
+    try {
+      await updateTeamQuery(item.id, title.trim(), folderId, session.csrfToken);
+      await refreshTeamLibrary();
+      setToast("Team star updated");
+      return true;
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Team star could not be updated");
+      return false;
+    }
+  };
+
+  const starForTeam = async () => {
     if (!activeTab || !session) return;
-    const teamId = shareTarget || session.user.teams[0]?.id || "";
+    const title = starName.trim();
+    if (!title) {
+      setToast("Give this team star a name.");
+      return;
+    }
+    const teamId = starTeam || session.user.teams[0]?.id || "";
     if (!teamId) {
-      setToast("Choose a team first.");
+      setToast("Join a team before starring a query.");
       return;
     }
     const payload: SharePayload = {
       query: editorRef.current?.executableQuery() ?? activeTab.query,
       sourceId: activeTab.sourceId,
       tenant: activeTab.tenant,
-      title: activeTab.title,
+      title,
       resultMode: activeTab.resultMode,
     };
     try {
-      await createTeamQuery(teamId, shareFolder, payload, session.csrfToken);
+      await createTeamQuery(teamId, starFolder, payload, session.csrfToken);
       await refreshTeamLibrary();
-      setToast("Query saved to the team library");
-      setShareOpen(false);
+      setSidebarMode("stars");
+      setToast("Query starred for the team");
+      setStarOpen(false);
     } catch (error) {
-      setToast(error instanceof Error ? error.message : "Team query could not be saved");
+      setToast(error instanceof Error ? error.message : "Query could not be starred for the team");
     }
   };
 
   const activeSource = useMemo(() => session?.sources.find((source) => source.id === activeTab?.sourceId), [activeTab?.sourceId, session]);
-  const fieldsForEditor = fields.map((field) => field.value);
 
   if (sessionState.kind === "loading") return <Splash />;
   if (sessionState.kind === "signed-out") return <SignIn />;
@@ -643,19 +638,12 @@ export default function App() {
         <Sidebar
           mode={sidebarMode}
           onMode={setSidebarMode}
-          fields={fields}
-          values={values}
-          selectedField={selectedField}
-          loading={metadataLoading}
           history={historyEntries}
           teamLibraries={teamLibraries}
-          canInspect={hasTimeFilter(activeTab.query) && !Boolean(activeTab.contextError)}
-          onRefresh={() => void refreshFields()}
-          onField={(field) => void openField(field)}
-          onInsert={(field, value, exclude) => updateTab(activeTab.id, { query: insertFilter(activeTab.query, `${exclude ? "-" : ""}${field}:=${quoteLogSQLValue(value)}`) })}
           onRecall={recall}
-          onRecallTeamQuery={recallTeamQuery}
-          onCreateFolder={(teamId) => void createFolder(teamId)}
+          onOpenTeamStar={openTeamStar}
+          onEditTeamStar={editTeamStar}
+          onCreateFolder={openFolderDialog}
           onClearHistory={clearHistory}
         />
 
@@ -669,7 +657,46 @@ export default function App() {
             <button className="toolbar-button danger" onClick={() => cancel(activeTab.id)} disabled={!running}><CircleStop size={15} /> Cancel</button>
             <div className="toolbar-spacer" />
             <div className="menu-wrap">
-              <button className="toolbar-button" onClick={() => { setShareOpen(!shareOpen); setExportOpen(false); }}><Share2 size={15} /> Share <ChevronDown size={13} /></button>
+              <button
+                className="toolbar-button"
+                title={(session.user.teams ?? []).length === 0 ? "Join a team to star queries" : "Star this query for a team"}
+                disabled={(session.user.teams ?? []).length === 0}
+                onClick={() => {
+                  const opening = !starOpen;
+                  setStarOpen(opening);
+                  if (opening) setStarName("");
+                  setShareOpen(false);
+                  setExportOpen(false);
+                }}
+              >
+                <Star size={15} fill={starOpen ? "currentColor" : "none"} /> Star <ChevronDown size={13} />
+              </button>
+              {starOpen && <div className="popover-menu">
+                <div className="share-audience">
+                  <label className="star-name-field">
+                    <span>NAME</span>
+                    <input autoFocus maxLength={256} required value={starName} onChange={(event) => setStarName(event.target.value)} placeholder="Name this team star" />
+                  </label>
+                  <label>
+                    <span>TEAM</span>
+                    <select value={starTeam} onChange={(event) => { setStarTeam(event.target.value); setStarFolder(""); }}>
+                      {(session.user.teams ?? []).map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    <span>FOLDER</span>
+                    <select value={starFolder} onChange={(event) => setStarFolder(event.target.value)}>
+                      <option value="">No folder</option>
+                      {(teamLibraries.find((library) => library.team.id === starTeam)?.folders ?? []).map((folder) => <option value={folder.id} key={folder.id}>{folder.name}</option>)}
+                    </select>
+                  </label>
+                  <small>Saves an editable query snapshot that every authorized team member can reuse.</small>
+                </div>
+                <button disabled={!starName.trim()} onClick={() => void starForTeam()}><Star size={15} fill="currentColor" /><span><strong>Star for team</strong><small>Add to the reusable team library</small></span></button>
+              </div>}
+            </div>
+            <div className="menu-wrap">
+              <button className="toolbar-button" onClick={() => { setShareOpen(!shareOpen); setStarOpen(false); setExportOpen(false); }}><Share2 size={15} /> Share <ChevronDown size={13} /></button>
               {shareOpen && <div className="popover-menu">
                 <div className="share-audience">
                   <label>
@@ -678,7 +705,6 @@ export default function App() {
                       const type = event.target.value as ShareAudience["type"];
                       setShareAudience(type);
                       setShareTarget(type === "team" ? (session.user.teams ?? [])[0]?.id ?? "" : session.user.email);
-                      setShareFolder("");
                     }}>
                       <option value="user">User</option>
                       <option value="team" disabled={(session.user.teams ?? []).length === 0}>Team</option>
@@ -686,14 +712,9 @@ export default function App() {
                   </label>
                   {shareAudience === "user"
                     ? <input aria-label="Share recipient" value={shareTarget} onChange={(event) => setShareTarget(event.target.value)} placeholder="email or subject" />
-                    : <select aria-label="Share team" value={shareTarget} onChange={(event) => { setShareTarget(event.target.value); setShareFolder(""); }}>{(session.user.teams ?? []).map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select>}
-                  {shareAudience === "team" && <select className="team-folder-select" aria-label="Team folder" value={shareFolder} onChange={(event) => setShareFolder(event.target.value)}>
-                    <option value="">No folder</option>
-                    {(teamLibraries.find((library) => library.team.id === shareTarget)?.folders ?? []).map((folder) => <option value={folder.id} key={folder.id}>{folder.name}</option>)}
-                  </select>}
+                    : <select aria-label="Share team" value={shareTarget} onChange={(event) => setShareTarget(event.target.value)}>{(session.user.teams ?? []).map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select>}
                   <small>Login is required. The recipient’s log access is checked again.</small>
                 </div>
-                {shareAudience === "team" && <button onClick={() => void saveToTeamLibrary()}><Users size={15} /><span><strong>Save to team library</strong><small>Visible to team members · grouped by folder</small></span></button>}
                 <button onClick={() => void copyLink()}><Share2 size={15} /><span><strong>Copy private link</strong><small>Opaque ID · expires automatically</small></span></button>
                 <button onClick={() => void copyQueryLinkAndResults()} disabled={activeTab.rows.length === 0}><Copy size={15} /><span><strong>Copy query, private link &amp; results</strong><small>Rich HTML · Markdown fallback</small></span></button>
                 <button onClick={copyQuery}><TerminalSquare size={15} /><span><strong>Copy query</strong><small>Selected text or full editor</small></span></button>
@@ -701,7 +722,7 @@ export default function App() {
               </div>}
             </div>
             <div className="menu-wrap">
-              <button className="icon-button" aria-label="Download results" onClick={() => { setExportOpen(!exportOpen); setShareOpen(false); }} disabled={activeTab.rows.length === 0}><Download size={16} /></button>
+              <button className="icon-button" aria-label="Download results" onClick={() => { setExportOpen(!exportOpen); setShareOpen(false); setStarOpen(false); }} disabled={activeTab.rows.length === 0}><Download size={16} /></button>
               {exportOpen && <div className="popover-menu compact"><button onClick={() => download("csv")}><Table2 size={15} /> CSV</button><button onClick={() => download("ndjson")}><FileJson size={15} /> NDJSON</button></div>}
             </div>
           </div>
@@ -717,7 +738,7 @@ export default function App() {
               key={activeTab.id}
               ref={editorRef}
               value={activeTab.query}
-              fields={fieldsForEditor}
+              fields={EMPTY_EDITOR_FIELDS}
               dark={theme === "dark"}
               onChange={(query) => updateTab(activeTab.id, { query, error: undefined })}
               onRun={(query) => executeActive(false, query)}
@@ -752,6 +773,15 @@ export default function App() {
       </main>
       <div className="screenreader-status" aria-live="polite">{toast}</div>
       {toast && <div className="toast"><span>{toast}</span></div>}
+      {folderDialogTeam && (
+        <FolderDialog
+          teamName={teamLibraries.find((library) => library.team.id === folderDialogTeam)?.team.name ?? "this team"}
+          busy={folderCreating}
+          error={folderCreateError}
+          onClose={closeFolderDialog}
+          onCreate={(name) => void createFolder(name)}
+        />
+      )}
       {passwordOpen && <PasswordPanel csrfToken={session.csrfToken} onClose={() => setPasswordOpen(false)} onMessage={setToast} />}
     </div>
   );
@@ -793,7 +823,7 @@ function SignIn() {
         {message && <div className="signin-error">{message}</div>}
         <button className="primary-button large-button" disabled={busy}><Play size={16} /> {busy ? "Signing in…" : "Sign in"}</button>
       </form>
-      <small>Users, passwords, teams, folders, and shared queries are stored in SQLite.</small>
+      <small>Users, passwords, teams, folders, team stars, and private shares are stored in SQLite.</small>
     </div>
   );
 }

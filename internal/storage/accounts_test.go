@@ -70,6 +70,54 @@ func TestLocalAccountsTeamsAndQueryFolders(t *testing.T) {
 		len(libraries[0].Folders[0].Queries) != 1 || libraries[0].Folders[0].Queries[0].ID != item.ID {
 		t.Fatalf("unexpected team library: %#v", libraries)
 	}
+
+	archive, err := store.CreateFolder(ctx, admin.Teams[0].ID, "Archive", member.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.UpdateTeamQuery(ctx, UpdateTeamQueryInput{
+		ID: item.ID, FolderID: archive.ID, Title: "Priority errors", UserID: member.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Title != "Priority errors" || updated.FolderID != archive.ID || updated.UpdatedAt.IsZero() {
+		t.Fatalf("unexpected updated team query: %#v", updated)
+	}
+	if _, err := store.UpdateTeamQuery(ctx, UpdateTeamQueryInput{
+		ID: item.ID, FolderID: archive.ID, Title: " ", UserID: member.ID,
+	}); err == nil {
+		t.Fatal("empty team star name was accepted")
+	}
+
+	other, err := store.CreateUser(ctx, CreateUserInput{
+		Email: "other@example.test", Name: "Other", Password: "other-secure-password",
+		Roles: []string{"reader"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddTeamMember(ctx, admin.Teams[0].ID, other.ID); err != nil {
+		t.Fatal(err)
+	}
+	collaborativeUpdate, err := store.UpdateTeamQuery(ctx, UpdateTeamQueryInput{
+		ID: item.ID, FolderID: "", Title: "Team-owned errors", UserID: other.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if collaborativeUpdate.Title != "Team-owned errors" || collaborativeUpdate.FolderID != "" {
+		t.Fatalf("unexpected teammate update: %#v", collaborativeUpdate)
+	}
+
+	libraries, err = store.ListTeamLibraries(ctx, admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(libraries) != 1 || len(libraries[0].Queries) != 1 ||
+		libraries[0].Queries[0].Title != "Team-owned errors" {
+		t.Fatalf("teammate update was not persisted: %#v", libraries)
+	}
 }
 
 func TestAccountValidationAndMembershipBoundaries(t *testing.T) {
