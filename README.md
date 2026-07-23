@@ -11,7 +11,7 @@ npm install
 just dev
 ```
 
-`just dev` uses the tracked `config.dev.yml` and local-only default credentials, starts VictoriaLogs and the continuous fake-log generator only when needed, and leaves running Compose containers untouched. It replaces the `vesta` Zellij session so the API, Vite, and log viewer restart each time. Zellij contains a two-pane `dev` tab for the API and Vite plus a `services` tab that follows the Compose logs. Open `http://localhost:5173` and sign in as `admin@localhost` with password `vesta-local-password`. Vite proxies API and authentication requests to the API on port 8080. Use a query such as `_time:5m` to inspect the generated local logs.
+`just dev` uses the tracked `config.dev.yml` and local-only default credentials, starts VictoriaLogs and the continuous fake-log generator only when needed, and leaves running Compose containers untouched. It replaces the `vesta` Zellij session so the API, Vite, and log viewer restart each time. Zellij contains a two-pane `dev` tab for the API and Vite plus a `services` tab that follows the Compose logs. Open `http://localhost:5173` and sign in as `admin@localhost` with password `vesta-local-password`. Vite proxies API and authentication requests to the development API on port 18080, avoiding the port commonly used by local Kubernetes forwards. Use a query such as `_time:5m` to inspect the generated local logs.
 
 The development session secret and bootstrap password can be overridden by exporting `VESTA_SESSION_SECRET` and `VESTA_BOOTSTRAP_PASSWORD` before running `just dev`.
 
@@ -48,11 +48,20 @@ Passwords are hashed with bcrypt before storage. Administrators can open `/admin
 
 - `Shift+Enter` runs the current selection, or the full editor when there is no selection.
 - Main queries are POSTed to `/select/logsql/query` with the LogsQL `query` value and authorized tenant/auth headers. The only server-added query parameter is an optional, administrator-fixed `hidden_fields_filters` security policy; Vesta also recursively redacts those fields at its response boundary and blocks their metadata calls.
+- A terminal Kusto-style `render` stage is interpreted by Vesta and removed before the LogsQL query is sent upstream. Supported visualizations are `timechart`, `linechart`, `areachart`, `stackedareachart`, `columnchart`, `barchart`, `piechart`, `scatterchart`, `anomalychart`, and `card`, plus `render table`. Common `with (...)` properties include `title`, `xcolumn`, `ycolumns`, `series`, `xtitle`, `ytitle`, `legend`, `kind`, `ymin`, and `ymax`.
 - Queries without a real `_time:` filter are rejected in both the editor and API. Text inside strings and `#` comments does not count.
 - The viewer stops at 50,000 rows, 32 MiB, or 30 seconds by default. Truncation is always visible and cancels the upstream request.
 - Tabs and the last 100 query texts are saved in IndexedDB. Result rows are never persisted.
 - Private query links use random opaque IDs backed by SQLite, expire automatically, and can target a local user or one of the sharer’s teams. Opening a private link requires login and rechecks the recipient’s source and tenant authorization.
 - Team members can name and star queries into a shared SQLite library and organize them into team folders. Opening a team star creates an editable copy in a new tab and never executes it automatically; any current team member can rename it or move it to another folder.
+
+For example, aggregate logs into five-minute buckets and open the chart view automatically:
+
+```logsql
+_time:1h
+| stats by (_time:5m) count() as requests
+| render timechart with (title="Requests", xcolumn=_time, ycolumns=requests)
+```
 
 ## Validate and package
 

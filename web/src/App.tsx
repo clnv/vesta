@@ -1,5 +1,5 @@
 import {
-  Braces, ChevronDown, CircleStop, Copy, Download, FileJson, History, KeyRound, LogOut,
+  Braces, ChartNoAxesCombined, ChevronDown, CircleStop, Copy, Download, FileJson, History, KeyRound, LogOut,
   Moon, Play, Radio, Share2, Star, Sun, Table2, TerminalSquare, Users, X,
 } from "lucide-react";
 import type { FormEvent } from "react";
@@ -15,8 +15,9 @@ import {
   APIError, createShare, createTeamFolder, createTeamQuery, getSession,
   getTeamLibrary, login, openShare, streamQuery, updateTeamQuery,
 } from "./lib/api";
+import { blobToDataURL, chartElementToPNG } from "./lib/chartExport";
 import { clipboardRows, formatRows, shareBundle } from "./lib/format";
-import { columnsFromQuery, DEFAULT_QUERY, hasTimeFilter } from "./lib/logsql";
+import { columnsFromQuery, DEFAULT_QUERY, hasTimeFilter, renderDirectiveFromQuery } from "./lib/logsql";
 import { appendToRing } from "./lib/ring";
 import { clearHistory as clearStoredHistory, loadWorkspace, saveWorkspace } from "./lib/storage";
 import { privateShareURL, sharedTabId, shareTokenFromHash } from "./lib/share";
@@ -36,7 +37,8 @@ function currentRoute(): AppRoute {
 }
 
 function runtimeTab(tab: PersistedTab): ExplorerTab {
-  return { ...tab, resultMode: tab.resultMode === "json" ? "json" : "table", status: "idle", rows: [], droppedRows: 0 };
+  const resultMode = tab.resultMode === "json" || tab.resultMode === "chart" ? tab.resultMode : "table";
+  return { ...tab, resultMode, status: "idle", rows: [], droppedRows: 0 };
 }
 
 function newTab(session: Session, title = "New query"): ExplorerTab {
@@ -108,6 +110,10 @@ export default function App() {
 
   const session = sessionState.kind === "ready" ? sessionState.session : null;
   const activeTab = tabs.find((tab) => tab.id === activeId);
+  const activeVisualization = useMemo(
+    () => activeTab ? renderDirectiveFromQuery(activeTab.lastExecutedQuery || activeTab.query) : null,
+    [activeTab?.lastExecutedQuery, activeTab?.query],
+  );
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -227,11 +233,13 @@ export default function App() {
     const tab = tabs.find((candidate) => candidate.id === tabId);
     const query = explicitQuery.trim();
     if (!tab || !query) return;
+    const visualization = renderDirectiveFromQuery(query);
+    const executableQuery = visualization?.executableQuery || query;
     if (tab.contextError) {
       updateTab(tabId, { status: "error", error: tab.contextError });
       return;
     }
-    if (!hasTimeFilter(query)) {
+    if (!hasTimeFilter(executableQuery)) {
       updateTab(tabId, { status: "error", error: "Add an explicit _time: filter before running this query." });
       return;
     }
@@ -251,6 +259,9 @@ export default function App() {
       warning: undefined,
       stats: undefined,
       protected: false,
+      resultMode: visualization
+        ? visualization.visualization === "table" ? "table" : "chart"
+        : tab.resultMode === "chart" ? "table" : tab.resultMode,
     });
 
     let pendingRows: Record<string, unknown>[] = [];
@@ -266,7 +277,7 @@ export default function App() {
     };
     const flushTimer = window.setInterval(flushRows, 80);
     try {
-      await streamQuery(tail ? "/api/v1/tail" : "/api/v1/query", { sourceId: tab.sourceId, tenant: tab.tenant, query }, session.csrfToken, controller.signal, (event: StreamEvent) => {
+      await streamQuery(tail ? "/api/v1/tail" : "/api/v1/query", { sourceId: tab.sourceId, tenant: tab.tenant, query: executableQuery }, session.csrfToken, controller.signal, (event: StreamEvent) => {
         if (controllers.current.get(tabId) !== controller) return;
         if (event.type === "meta") updateTab(tabId, { warning: event.warning || undefined, stats: { requestId: event.requestId, rows: 0, bytes: 0, elapsedMs: 0 } });
         if (event.type === "row" && event.row) pendingRows.push(event.row);
@@ -369,7 +380,7 @@ export default function App() {
     }
   };
 
-  const copyRichText = async (text: string, html: string, message: string) => {
+  const copyRichText = async (text: string, html: string, message: string, image?: Blob) => {
     try {
       if (typeof ClipboardItem === "undefined" || typeof navigator.clipboard.write !== "function") {
         await navigator.clipboard.writeText(text);
@@ -379,12 +390,55 @@ export default function App() {
       await navigator.clipboard.write([new ClipboardItem({
         "text/plain": new Blob([text], { type: "text/plain" }),
         "text/html": new Blob([html], { type: "text/html" }),
+        ...(image ? { "image/png": image } : {}),
       })]);
       setToast(message);
     } catch {
+      if (image && typeof ClipboardItem !== "undefined" && typeof navigator.clipboard.write === "function") {
+        try {
+          await navigator.clipboard.write([new ClipboardItem({ "image/png": image })]);
+          setToast("Chart image copied; rich share format is unavailable.");
+          return;
+        } catch {
+          // Continue to the portable text fallback.
+        }
+      }
       try {
         await navigator.clipboard.writeText(text);
         setToast(`${message} as Markdown`);
+      } catch {
+        setToast("Clipboard access was denied by the browser.");
+      }
+    }
+  };
+
+  const renderedChartPNG = async (): Promise<Blob | null> => {
+    const chart = document.querySelector<HTMLElement>(".results-panel .chart-view");
+    if (!chart) return null;
+    try {
+      return await chartElementToPNG(chart);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "The chart image could not be created.");
+      return null;
+    }
+  };
+
+  const copyChartImage = async (image: Blob, fallbackText: string) => {
+    try {
+      if (typeof ClipboardItem === "undefined" || typeof navigator.clipboard.write !== "function") {
+        await navigator.clipboard.writeText(fallbackText);
+        setToast("Chart source data copied; image clipboard is unavailable.");
+        return;
+      }
+      await navigator.clipboard.write([new ClipboardItem({
+        "image/png": image,
+        "text/plain": new Blob([fallbackText], { type: "text/plain" }),
+      })]);
+      setToast("Chart image copied");
+    } catch {
+      try {
+        await navigator.clipboard.writeText(fallbackText);
+        setToast("Chart source data copied; image clipboard was denied.");
       } catch {
         setToast("Clipboard access was denied by the browser.");
       }
@@ -433,21 +487,36 @@ export default function App() {
     const query = activeTab.lastExecutedQuery || activeTab.query;
     const link = await createProtectedLink(query);
     if (link) {
+      const chartImage = activeTab.resultMode === "chart" ? await renderedChartPNG() : null;
       const bundle = shareBundle({
         query,
         link,
         rows: activeTab.rows,
         mode: activeTab.resultMode,
+        chartImageDataURL: chartImage ? await blobToDataURL(chartImage) : undefined,
       });
-      await copyRichText(bundle.text, bundle.html, bundle.truncated ? "Rich query, link, and result excerpt copied" : "Rich query, link, and results copied");
+      await copyRichText(
+        bundle.text,
+        bundle.html,
+        chartImage
+          ? "Rich query, private link, and chart image copied"
+          : bundle.truncated ? "Rich query, link, and result excerpt copied" : "Rich query, link, and results copied",
+        chartImage ?? undefined,
+      );
     }
     setShareOpen(false);
   };
 
-  const copyResults = () => {
+  const copyResults = async () => {
     if (!activeTab || activeTab.rows.length === 0) return;
     const result = clipboardRows(activeTab.rows, activeTab.resultMode, columnsFromQuery(activeTab.lastExecutedQuery || activeTab.query));
-    void copyText(result.text, result.truncated ? "Result excerpt copied (5 MiB clipboard limit)" : "Results copied");
+    if (activeTab.resultMode === "chart") {
+      const chartImage = await renderedChartPNG();
+      if (chartImage) await copyChartImage(chartImage, result.text);
+      else await copyText(result.text, "Chart source data copied");
+    } else {
+      await copyText(result.text, result.truncated ? "Result excerpt copied (5 MiB clipboard limit)" : "Results copied");
+    }
     setShareOpen(false);
   };
 
@@ -716,9 +785,9 @@ export default function App() {
                   <small>Login is required. The recipient’s log access is checked again.</small>
                 </div>
                 <button onClick={() => void copyLink()}><Share2 size={15} /><span><strong>Copy private link</strong><small>Opaque ID · expires automatically</small></span></button>
-                <button onClick={() => void copyQueryLinkAndResults()} disabled={activeTab.rows.length === 0}><Copy size={15} /><span><strong>Copy query, private link &amp; results</strong><small>Rich HTML · Markdown fallback</small></span></button>
+                <button onClick={() => void copyQueryLinkAndResults()} disabled={activeTab.rows.length === 0}><Copy size={15} /><span><strong>Copy query, private link &amp; results</strong><small>{activeTab.resultMode === "chart" ? "Rich HTML with chart image · Markdown fallback" : "Rich HTML · Markdown fallback"}</small></span></button>
                 <button onClick={copyQuery}><TerminalSquare size={15} /><span><strong>Copy query</strong><small>Selected text or full editor</small></span></button>
-                <button onClick={copyResults} disabled={activeTab.rows.length === 0}><Copy size={15} /><span><strong>Copy results</strong><small>TSV or NDJSON · max 5 MiB</small></span></button>
+                <button onClick={() => void copyResults()} disabled={activeTab.rows.length === 0}><Copy size={15} /><span><strong>{activeTab.resultMode === "chart" ? "Copy chart image" : "Copy results"}</strong><small>{activeTab.resultMode === "chart" ? "PNG · source-data fallback" : "TSV or NDJSON · max 5 MiB"}</small></span></button>
               </div>}
             </div>
             <div className="menu-wrap">
@@ -748,6 +817,11 @@ export default function App() {
           <div className="results-panel">
             <div className="results-header">
               <div className="result-tabs" role="tablist" aria-label="Result view">
+                {activeVisualization && activeVisualization.visualization !== "table" && (
+                  <button className={activeTab.resultMode === "chart" ? "active" : ""} onClick={() => updateTab(activeTab.id, { resultMode: "chart" })}>
+                    <ChartNoAxesCombined size={14} /> Chart
+                  </button>
+                )}
                 <button className={activeTab.resultMode === "table" ? "active" : ""} onClick={() => updateTab(activeTab.id, { resultMode: "table" })}><Table2 size={14} /> Table</button>
                 <button className={activeTab.resultMode === "json" ? "active" : ""} onClick={() => updateTab(activeTab.id, { resultMode: "json" })}><Braces size={14} /> JSON</button>
               </div>
@@ -766,6 +840,7 @@ export default function App() {
               rows={activeTab.rows}
               mode={activeTab.resultMode}
               query={activeTab.lastExecutedQuery || activeTab.query}
+              visualization={activeVisualization}
               onCopy={(value) => void copyText(value, "Value copied")}
             />
           </div>

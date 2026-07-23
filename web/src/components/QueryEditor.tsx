@@ -31,7 +31,8 @@ const language = StreamLanguage.define({
     if (stream.match(/^'(?:[^'\\]|\\.)*'/)) return "string";
     if (stream.match(/^-?\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h|d|w|y)?\b/)) return "number";
     if (stream.match(/^\b(?:AND|OR|NOT|in|exact|contains_any|contains_all)\b/i)) return "operatorKeyword";
-    if (stream.match(/^\b(?:fields|keep|delete|drop|rename|copy|filter|format|unpack_json|unpack_logfmt|unpack_syslog|stats|uniq|top|sort|limit|offset|first|last|sample|math|field_names|field_values)\b/)) return "keyword";
+    if (stream.match(/^\b(?:fields|keep|delete|drop|rename|copy|filter|format|unpack_json|unpack_logfmt|unpack_syslog|stats|uniq|top|sort|limit|offset|first|last|sample|math|field_names|field_values|render|with)\b/)) return "keyword";
+    if (stream.match(/^\b(?:anomalychart|areachart|barchart|card|columnchart|linechart|piechart|scatterchart|stackedareachart|table|timechart)\b/)) return "typeName";
     if (stream.match(/^\b(?:count|count_uniq|sum|max|min|avg|median|quantile|rate|row_max|row_min)\b/)) return "typeName";
     if (stream.match(/^_[A-Za-z0-9_.]+/)) return "variableName.special";
     if (stream.match(/^[A-Za-z][A-Za-z0-9_.-]*(?=\s*:)/)) return "propertyName";
@@ -55,6 +56,8 @@ const keywords = [
   "_time:5m", "_time:1h", "_time:24h", "_time:[2026-01-01Z, 2026-01-02Z)",
   "sort by (_time) desc", "limit 200", "fields _time, _stream, _msg", "stats count()",
   "stats by (_time:5m) count()", "count_uniq(_stream_id)", "filter", "format", "unpack_json",
+  "render timechart", "render linechart", "render areachart", "render columnchart",
+  "render barchart", "render piechart", "render scatterchart", "render card",
 ];
 
 export const QueryEditor = forwardRef<QueryEditorHandle, Props>(function QueryEditor({ value, fields, dark, onChange, onRun }, ref) {
@@ -133,4 +136,3 @@ export const QueryEditor = forwardRef<QueryEditorHandle, Props>(function QueryEd
     />
   );
 });
-

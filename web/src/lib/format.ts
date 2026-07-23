@@ -8,6 +8,7 @@ interface ShareBundleOptions {
   link: string;
   rows: Record<string, unknown>[];
   mode: ResultMode;
+  chartImageDataURL?: string;
 }
 
 export function orderedColumns(rows: Record<string, unknown>[], preferred: string[] = []): string[] {
@@ -38,7 +39,7 @@ export function formatRows(
   format: "clipboard" | "csv" | "ndjson" = "clipboard",
   preferredColumns: string[] = [],
 ): string {
-  if (format === "ndjson" || (format === "clipboard" && mode !== "table")) {
+  if (format === "ndjson" || (format === "clipboard" && mode === "json")) {
     return rows.map((row) => JSON.stringify(row)).join("\n");
   }
   const columns = orderedColumns(rows, preferredColumns);
@@ -98,8 +99,8 @@ const LOGSQL_HIGHLIGHTS: { pattern: RegExp; style: string }[] = [
   { pattern: /^'(?:[^'\\]|\\.)*'/, style: "color:#047857" },
   { pattern: /^-?\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h|d|w|y)?\b/, style: "color:#b45309" },
   { pattern: /^(?:AND|OR|NOT|in|exact|contains_any|contains_all)\b/i, style: "color:#be185d" },
-  { pattern: /^(?:fields|keep|delete|drop|rename|copy|filter|format|unpack_json|unpack_logfmt|unpack_syslog|stats|uniq|top|sort|limit|offset|first|last|sample|math|field_names|field_values|by|as)\b/, style: "color:#7c3aed;font-weight:600" },
-  { pattern: /^(?:count|count_uniq|sum|max|min|avg|median|quantile|rate|row_max|row_min)\b/, style: "color:#9333ea" },
+  { pattern: /^(?:fields|keep|delete|drop|rename|copy|filter|format|unpack_json|unpack_logfmt|unpack_syslog|stats|uniq|top|sort|limit|offset|first|last|sample|math|field_names|field_values|by|as|render|with)\b/, style: "color:#7c3aed;font-weight:600" },
+  { pattern: /^(?:count|count_uniq|sum|max|min|avg|median|quantile|rate|row_max|row_min|anomalychart|areachart|barchart|card|columnchart|linechart|piechart|scatterchart|stackedareachart|table|timechart)\b/, style: "color:#9333ea" },
   { pattern: /^_[A-Za-z0-9_.]+/, style: "color:#7c3aed" },
   { pattern: /^[A-Za-z][A-Za-z0-9_.-]*(?=\s*:)/, style: "color:#0369a1" },
   { pattern: /^(?:\||[=!~<>]+|:)/, style: "color:#be185d" },
@@ -139,11 +140,16 @@ function resultsHTML(rows: Record<string, unknown>[], mode: ResultMode, preferre
   return `<table style="border-collapse:collapse;border-spacing:0"><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
-export function shareBundle({ query, link, rows, mode }: ShareBundleOptions): { text: string; html: string; truncated: boolean } {
+export function shareBundle({ query, link, rows, mode, chartImageDataURL }: ShareBundleOptions): { text: string; html: string; truncated: boolean } {
   const preferredColumns = columnsFromQuery(query);
   const results = clipboardSelection(rows, mode, preferredColumns);
-  const resultLabel = results.truncated ? `Results (excerpt of ${rows.length.toLocaleString()} rows):` : `Results (${rows.length.toLocaleString()} rows):`;
-  const markdownResultLabel = results.truncated ? `Results: excerpt of ${rows.length.toLocaleString()} rows` : `Results: ${rows.length.toLocaleString()} rows`;
+  const chartImage = mode === "chart" && chartImageDataURL;
+  const resultLabel = chartImage
+    ? `Chart (${rows.length.toLocaleString()} source rows):`
+    : results.truncated ? `Results (excerpt of ${rows.length.toLocaleString()} rows):` : `Results (${rows.length.toLocaleString()} rows):`;
+  const markdownResultLabel = chartImage
+    ? `Chart source data: ${rows.length.toLocaleString()} rows`
+    : results.truncated ? `Results: excerpt of ${rows.length.toLocaleString()} rows` : `Results: ${rows.length.toLocaleString()} rows`;
   const safeLink = escapeHTML(link);
   const richResultLabel = escapeHTML(resultLabel.slice(0, -1));
   return {
@@ -153,14 +159,16 @@ export function shareBundle({ query, link, rows, mode }: ShareBundleOptions): { 
       markdownCodeBlock(query, "logsql"),
       "",
       markdownResultLabel,
-      markdownCodeBlock(results.text, mode === "table" ? "tsv" : "json"),
+      markdownCodeBlock(results.text, mode === "json" ? "json" : "tsv"),
     ].join("\n"),
     html: [
       '<div style="color:#111827;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.5">',
       `<p style="margin:0 0 8px"><a href="${safeLink}" style="color:#2563eb;font-weight:700;text-decoration:underline">[Query]</a></p>`,
       `<a href="${safeLink}" style="color:inherit;text-decoration:none"><pre style="margin:0 0 14px;padding:12px;border:1px solid #d1d5db;border-radius:6px;background:#f8fafc;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere"><code>${highlightLogSQL(query)}</code></pre></a>`,
       `<p style="margin:0 0 6px;color:#334155;font-weight:700">${richResultLabel}</p>`,
-      resultsHTML(results.rows, mode, preferredColumns),
+      chartImage
+        ? `<img src="${escapeHTML(chartImage)}" alt="Rendered query chart" style="display:block;max-width:960px;width:100%;height:auto;border:1px solid #d1d5db;border-radius:6px;background:#fff" />`
+        : resultsHTML(results.rows, mode, preferredColumns),
       "</div>",
     ].join(""),
     truncated: results.truncated,

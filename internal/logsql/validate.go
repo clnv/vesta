@@ -57,6 +57,48 @@ func LooksUnbounded(query string) bool {
 	return strings.Contains(clean, "_time:>") || strings.Contains(clean, "_time:day_range") || strings.Contains(clean, "_time:week_range")
 }
 
+// WithoutRenderOperator removes a terminal Kusto-style render stage. Rendering
+// is a Vesta user-agent concern; VictoriaLogs should only receive LogsQL.
+func WithoutRenderOperator(query string) string {
+	pipe := lastTopLevelPipe(query)
+	if pipe < 0 {
+		return query
+	}
+	stage := strings.TrimSpace(stripCommentsAndStrings(query[pipe+1:]))
+	fields := strings.Fields(stage)
+	if len(fields) < 2 || !strings.EqualFold(fields[0], "render") {
+		return query
+	}
+	return strings.TrimRight(query[:pipe], " \t\r\n")
+}
+
+func lastTopLevelPipe(query string) int {
+	pipe := -1
+	var quote byte
+	comment := false
+	for i := 0; i < len(query); i++ {
+		switch {
+		case comment:
+			if query[i] == '\n' {
+				comment = false
+			}
+		case quote != 0:
+			if query[i] == '\\' {
+				i++
+			} else if query[i] == quote {
+				quote = 0
+			}
+		case query[i] == '#':
+			comment = true
+		case query[i] == '"' || query[i] == '\'':
+			quote = query[i]
+		case query[i] == '|':
+			pipe = i
+		}
+	}
+	return pipe
+}
+
 func stripCommentsAndStrings(query string) string {
 	var out strings.Builder
 	for i := 0; i < len(query); {

@@ -178,7 +178,7 @@ func TestQueryForwardsOnlyQuerySemantics(t *testing.T) {
 	defer upstream.Close()
 
 	handler := testHandler(t, upstream.URL, config.LimitsConfig{})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/query", queryBody("_time:1h error | limit 2"))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/query", queryBody(`_time:1h error | limit 2 | render timechart with (title="Errors")`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-CSRF-Token", "vesta-development-csrf")
 	recorder := httptest.NewRecorder()
@@ -453,7 +453,7 @@ func TestPrivateSharesRequireLoginAndEnforceUserOrTeamAudience(t *testing.T) {
 			"payload": map[string]any{
 				"query": "_time:1h error", "sourceId": "prod",
 				"tenant": map[string]string{"accountId": "12", "projectId": "34", "name": "payments"},
-				"title":  "Errors", "resultMode": "table",
+				"title":  "Errors", "resultMode": "chart",
 			},
 			"audience": audience,
 		})

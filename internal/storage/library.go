@@ -98,7 +98,7 @@ func (s *Store) CreateTeamQuery(ctx context.Context, input CreateTeamQueryInput)
 	if input.SourceID == "" || input.TenantAccountID == "" || input.TenantProjectID == "" {
 		return TeamQuery{}, errors.New("query source and tenant are required")
 	}
-	if input.ResultMode != "table" && input.ResultMode != "json" {
+	if input.ResultMode != "table" && input.ResultMode != "json" && input.ResultMode != "chart" {
 		return TeamQuery{}, errors.New("query result mode is invalid")
 	}
 	var folder any
