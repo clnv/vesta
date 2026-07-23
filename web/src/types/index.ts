@@ -1,4 +1,4 @@
-export type ResultMode = "log" | "table" | "json";
+export type ResultMode = "table" | "json";
 export type RunStatus = "idle" | "running" | "tailing" | "complete" | "truncated" | "error" | "cancelled";
 
 export interface Tenant {
@@ -92,4 +92,3 @@ export interface SharePayload {
   title: string;
   resultMode: ResultMode;
 }
-

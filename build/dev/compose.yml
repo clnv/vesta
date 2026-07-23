@@ -1,0 +1,31 @@
+name: vesta-dev
+
+services:
+  victorialogs:
+    image: victoriametrics/victoria-logs:v1.52.0
+    command:
+      - -storageDataPath=/victoria-logs-data
+      - -retentionPeriod=1d
+    ports:
+      - "9428:9428"
+    volumes:
+      - victoria-logs-data:/victoria-logs-data
+    restart: unless-stopped
+
+  fake-logs:
+    image: curlimages/curl:8.14.1
+    entrypoint:
+      - /bin/sh
+      - /opt/vesta/fake-logs.sh
+    environment:
+      LOG_INTERVAL_SECONDS: "1"
+      VICTORIALOGS_URL: http://victorialogs:9428
+    volumes:
+      - ./fake-logs.sh:/opt/vesta/fake-logs.sh:ro
+    depends_on:
+      - victorialogs
+    init: true
+    restart: unless-stopped
+
+volumes:
+  victoria-logs-data:

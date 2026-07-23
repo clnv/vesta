@@ -25,6 +25,7 @@ export function decodeShare(hash: string): SharePayload | null {
   if (!hash.startsWith(PREFIX)) return null;
   try {
     const parsed = JSON.parse(strFromU8(decompressSync(fromBase64URL(hash.slice(PREFIX.length))))) as Partial<SharePayload>;
+    const resultMode = parsed.resultMode as string | undefined;
     if (
       parsed.v !== 1 ||
       typeof parsed.query !== "string" ||
@@ -33,9 +34,9 @@ export function decodeShare(hash: string): SharePayload | null {
       !parsed.tenant ||
       typeof parsed.tenant.accountId !== "string" ||
       typeof parsed.tenant.projectId !== "string" ||
-      !["log", "table", "json"].includes(parsed.resultMode ?? "")
+      !["log", "table", "json"].includes(resultMode ?? "")
     ) return null;
-    return parsed as SharePayload;
+    return { ...parsed, resultMode: resultMode === "json" ? "json" : "table" } as SharePayload;
   } catch {
     return null;
   }
@@ -53,4 +54,3 @@ export function sharedTabId(hash: string): string {
   }
   return `shared-${(value >>> 0).toString(36)}`;
 }
-

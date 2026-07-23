@@ -16,3 +16,15 @@ it("round trips a versioned share fragment", () => {
   expect(shareURL(payload, { origin: "https://logs.example.com", pathname: "/" })).toContain("#share=");
 });
 
+it("migrates legacy log shares to the merged table view", () => {
+  const legacy = {
+    v: 1,
+    query: "_time:1h",
+    sourceId: "prod",
+    tenant: { accountId: "12", projectId: "34", name: "payments" },
+    title: "Legacy logs",
+    resultMode: "log",
+  } as unknown as SharePayload;
+
+  expect(decodeShare(encodeShare(legacy))?.resultMode).toBe("table");
+});
