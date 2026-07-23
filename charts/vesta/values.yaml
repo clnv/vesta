@@ -1,0 +1,188 @@
+replicaCount: 1
+
+api:
+  image:
+    repository: vesta-api
+    pullPolicy: IfNotPresent
+    tag: local
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: api
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /healthz
+      port: api
+    initialDelaySeconds: 2
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 3
+  startupProbe:
+    httpGet:
+      path: /healthz
+      port: api
+    periodSeconds: 2
+    timeoutSeconds: 2
+    failureThreshold: 30
+
+web:
+  image:
+    repository: vesta-web
+    pullPolicy: IfNotPresent
+    tag: local
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: web
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /healthz
+      port: web
+    initialDelaySeconds: 2
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 3
+  startupProbe:
+    httpGet:
+      path: /healthz
+      port: web
+    periodSeconds: 2
+    timeoutSeconds: 2
+    failureThreshold: 30
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: false
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+service:
+  type: ClusterIP
+  port: 80
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: vesta.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+config:
+  # When set, this ConfigMap must contain a config.yml key. config.data is ignored.
+  existingConfigMap: ""
+  data:
+    server:
+      listen: ":8080"
+      external_url: "http://localhost:8080"
+    auth:
+      # Safe only for local development or port-forwarding. Use OIDC in production.
+      dev_mode: true
+      dev_user:
+        subject: local-developer
+        email: developer@localhost
+        name: Local developer
+        roles:
+          - reader
+      session_secret_env: VESTA_SESSION_SECRET
+      session_ttl: 1h
+    limits:
+      query_timeout: 30s
+      max_rows: 50000
+      max_bytes: 33554432
+      max_queries_per_user: 4
+      max_tails_per_user: 2
+      max_line_bytes: 8388608
+    sources:
+      - id: local
+        name: Local VictoriaLogs
+        url: http://victorialogs:9428
+        roles:
+          - reader
+        tenants:
+          - account_id: "0"
+            project_id: "0"
+            name: default
+        auth:
+          type: none
+        hidden_fields: []
+
+secret:
+  # Prefer existingSecret in production. Its keys are exposed to Vesta as env vars.
+  existingSecret: ""
+  create: false
+  annotations: {}
+  data: {}
+  # Example only:
+  # data:
+  #   VESTA_SESSION_SECRET: "base64-encoded-32-byte-session-key"
+  #   VESTA_OIDC_CLIENT_SECRET: "client-secret"
+  #   VESTA_PRODUCTION_TOKEN: "victorialogs-token"
+
+extraEnv: []
+extraEnvFrom: []
+extraVolumes: []
+extraVolumeMounts: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+terminationGracePeriodSeconds: 20
+revisionHistoryLimit: 3
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70

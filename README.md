@@ -4,16 +4,16 @@ Vesta is a self-hosted, keyboard-first LogsQL explorer for VictoriaLogs. It keep
 
 ## Run locally
 
-Requirements: Go 1.26+, Node.js 24+, Just 1.57+, and a VictoriaLogs server on `localhost:9428`.
+Requirements: Go 1.26.5+, Node.js 24+, Just 1.57+, and a VictoriaLogs server on `localhost:9428`.
 
 ```sh
 cp config.example.yml config.local.yml
 npm install
 npm run build
-go run ./cmd/vesta -config config.local.yml
+go run ./cmd/api -config config.local.yml
 ```
 
-Open `http://localhost:8080`. For frontend development, run `npm run dev` in a second terminal; Vite proxies API and authentication requests to the Go service.
+For web development, run `npm run dev` in a second terminal and open `http://localhost:5173`; Vite proxies API and authentication requests to the API on port 8080. To run the production web gateway instead, use `go run ./cmd/web` and open `http://localhost:8081`.
 
 Development authentication is intentionally explicit in `config.local.yml`. Never expose a deployment with `dev_mode: true`.
 
@@ -48,18 +48,18 @@ Vesta supports `none`, `basic`, and `bearer` authentication for an administrator
 ```sh
 just test
 just build
-docker build -t vesta:local .
+just docker
 just integration-test
 just helm-lint
 ```
 
-The integration target builds Vesta, starts a pinned VictoriaLogs `v1.52.0` container, seeds two tenants, and verifies regular and stats rows, field discovery, tenant isolation, hidden fields, and live tail. It removes its containers and volume after the run.
+The integration target builds the `vesta-web` image from `web.Dockerfile` and `vesta-api` from `api.Dockerfile`, starts a pinned VictoriaLogs `v1.52.0` container, seeds two tenants, and verifies regular and stats rows, field discovery, tenant isolation, hidden fields, and live tail through the web gateway. It removes its containers and volume after the run.
 
-The Vesta container expects its configuration at `/etc/vesta/config.yml` by default. Health and Prometheus-format operational metrics are available at `/healthz` and `/metrics`. Logs include request IDs, subject IDs, source IDs, duration, row counts, and byte counts—never query text or result data.
+The `vesta-api` container expects its configuration at `/etc/vesta/config.yml` by default. `vesta-web` serves the SPA and proxies `/api`, `/auth`, and `/metrics` to the API, preserving a single browser origin. Health and Prometheus-format operational metrics are available at `/healthz` and `/metrics`. Logs include request IDs, subject IDs, source IDs, duration, row counts, and byte counts—never query text or result data.
 
 ## Kubernetes with Helm
 
-The chart in [`charts/vesta`](charts/vesta) deploys the single Vesta container with a generated or existing ConfigMap, existing or chart-managed Secret, Service, optional Ingress, probes, non-root security contexts, optional HPA and PodDisruptionBudget, and a `helm test` health check.
+The chart in [`charts/vesta`](charts/vesta) deploys the `vesta-web` and `vesta-api` images as two containers in one Pod, with a generated or existing ConfigMap, existing or chart-managed Secret, Service, optional Ingress, per-container probes, non-root security contexts, optional HPA and PodDisruptionBudget, and a `helm test` health check.
 
 ```sh
 helm upgrade --install vesta ./charts/vesta \
@@ -74,9 +74,9 @@ Use [`charts/vesta/README.md`](charts/vesta/README.md) for secret creation, loca
 
 GitHub Actions configuration lives under [`.github/workflows`](.github/workflows):
 
-- `CI` checks workflow syntax, Go formatting/module integrity/vet/race tests/coverage, reachable Go vulnerabilities, frontend tests and production builds, strict Helm linting and render variants, chart packaging, pull-request dependency changes, Dockerfile checks, the pinned VictoriaLogs integration suite, and the final container UID.
+- `CI` checks workflow syntax, Go formatting/module integrity/vet/race tests/coverage, reachable Go vulnerabilities, web tests and production builds, strict Helm linting and render variants, chart packaging, pull-request dependency changes, Dockerfile checks, the pinned VictoriaLogs integration suite, and the final container UID.
 - `CodeQL` analyzes Go and TypeScript on `main`, pull requests, manual runs, and a weekly schedule.
-- `Publish container image` publishes AMD64 images to `ghcr.io/<owner>/<repository>` from `master`, version tags, and manual runs. Version tags also produce semantic-version tags, while the default branch publishes `latest`.
+- `Publish container images` publishes AMD64 images as `ghcr.io/<owner>/<repository>-web` and `ghcr.io/<owner>/<repository>-api` from `master`, version tags, and manual runs. Version tags also produce semantic-version tags, while the default branch publishes `latest`.
 - [Dependabot](.github/dependabot.yml) groups weekly npm, Go module, Docker, and GitHub Actions updates.
 
 Actions are pinned to immutable commit SHAs with their release versions documented inline. CI has read-only repository permissions by default, with `security-events: write` granted only to CodeQL.

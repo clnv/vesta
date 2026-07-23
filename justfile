@@ -5,7 +5,9 @@ default:
 
 build:
     npm run build
-    go build -o vesta ./cmd/vesta
+    mkdir -p bin
+    go build -o ./bin/vesta-api ./cmd/api
+    go build -o ./bin/vesta-web ./cmd/web
 
 test:
     npm test
@@ -19,7 +21,8 @@ helm-lint:
     helm lint --strict ./charts/vesta --values ./charts/vesta/values-production.example.yaml
 
 dev:
-    go run ./cmd/vesta -config config.local.yml
+    go run ./cmd/api -config config.local.yml
 
 docker:
-    docker build -t vesta:local .
+    docker build --file api.Dockerfile --tag vesta-api:local .
+    docker build --file web.Dockerfile --tag vesta-web:local .

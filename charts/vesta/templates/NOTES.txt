@@ -1,0 +1,20 @@
+Vesta has been installed as {{ include "vesta.fullname" . }}.
+
+{{- if .Values.ingress.enabled }}
+Open:
+{{- range .Values.ingress.hosts }}
+  {{- $scheme := "http" }}
+  {{- if $.Values.ingress.tls }}{{ $scheme = "https" }}{{ end }}
+  {{ $scheme }}://{{ .host }}
+{{- end }}
+{{- else }}
+Access it with a local port-forward:
+
+  kubectl -n {{ .Release.Namespace }} port-forward service/{{ include "vesta.fullname" . }} 8080:{{ .Values.service.port }}
+
+Then open http://localhost:8080.
+{{- end }}
+
+Run the chart smoke test with:
+
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}

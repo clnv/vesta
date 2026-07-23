@@ -1,0 +1,17 @@
+apiVersion: v2
+name: vesta
+description: Self-hosted LogsQL explorer for VictoriaLogs
+type: application
+version: 0.2.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.25.0-0"
+home: https://github.com/vesta-explorer/vesta
+sources:
+  - https://github.com/vesta-explorer/vesta
+keywords:
+  - logs
+  - logsql
+  - victorialogs
+  - observability
+maintainers:
+  - name: Vesta maintainers

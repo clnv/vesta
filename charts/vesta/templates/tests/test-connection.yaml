@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "vesta.fullname" . }}-test-connection"
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: wget
+      image: busybox:1.37.0
+      command:
+        - wget
+      args:
+        - -q
+        - -O
+        - /dev/null
+        - http://{{ include "vesta.fullname" . }}:{{ .Values.service.port }}/healthz
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        readOnlyRootFilesystem: true
+        runAsUser: 65534
+        runAsGroup: 65534
