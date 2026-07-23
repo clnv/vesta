@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"io/fs"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -11,7 +10,6 @@ import (
 	"github.com/vesta-explorer/vesta/internal/auth"
 	"github.com/vesta-explorer/vesta/internal/config"
 	"github.com/vesta-explorer/vesta/internal/victoria"
-	"github.com/vesta-explorer/vesta/internal/webui"
 )
 
 type Server struct {
@@ -59,7 +57,6 @@ func New(cfg *config.Config, authenticator *auth.Authenticator, client *victoria
 	mux.Handle("POST /api/v1/tail", s.withUser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.handleStream(w, r, true) })))
 	mux.Handle("POST /api/v1/fields", s.withUser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.handleMetadata(w, r, false) })))
 	mux.Handle("POST /api/v1/field-values", s.withUser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.handleMetadata(w, r, true) })))
-	mux.Handle("/", s.staticHandler())
 	return securityHeaders(mux)
 }
 
@@ -147,38 +144,6 @@ func decodeQueryRequest(w http.ResponseWriter, r *http.Request) (queryRequest, b
 		return queryRequest{}, false
 	}
 	return input, true
-}
-
-func (s *Server) staticHandler() http.Handler {
-	dist, err := fs.Sub(webui.Files, "dist")
-	if err != nil {
-		panic(err)
-	}
-	files := http.FileServer(http.FS(dist))
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.NotFound(w, r)
-			return
-		}
-		path := strings.TrimPrefix(r.URL.Path, "/")
-		if path != "" {
-			if _, err := fs.Stat(dist, path); err == nil {
-				if strings.HasPrefix(path, "assets/") {
-					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-				}
-				files.ServeHTTP(w, r)
-				return
-			}
-		}
-		index, err := fs.ReadFile(dist, "index.html")
-		if err != nil {
-			http.Error(w, "frontend build is unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		_, _ = w.Write(index)
-	})
 }
 
 func securityHeaders(next http.Handler) http.Handler {

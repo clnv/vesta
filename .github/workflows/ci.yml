@@ -28,8 +28,8 @@ jobs:
       - name: Lint workflow files and embedded shell
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
-  backend:
-    name: Go test and validation
+  api:
+    name: API test and validation
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -74,11 +74,11 @@ jobs:
       - name: Scan reachable Go vulnerabilities
         uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
         with:
-          go-version-input: "1.26.0"
+          go-version-input: "1.26.5"
           go-package: ./...
 
-  frontend:
-    name: Frontend test and build
+  web:
+    name: Web test and build
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -91,7 +91,7 @@ jobs:
           cache: npm
       - name: Install locked dependencies
         run: npm ci
-      - name: Run frontend tests
+      - name: Run web tests
         run: npm test
       - name: Type-check and build production assets
         run: npm run build
@@ -114,8 +114,13 @@ jobs:
         uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v4.2.3
+      - name: Install Just
+        uses: taiki-e/install-action@c44f6b046f1c29ae5918b1e0bfdbb2f1813836fd # v2.84.1
+        with:
+          tool: just@1.57.0
+          fallback: none
       - name: Lint default and production values
-        run: make helm-lint
+        run: just helm-lint
       - name: Render default deployment
         run: helm template vesta ./charts/vesta --namespace vesta > /tmp/vesta-default.yaml
       - name: Render production deployment
@@ -149,41 +154,36 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  dependency-review:
-    name: Dependency review
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Review dependency changes
-        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
-        with:
-          fail-on-severity: high
-          deny-licenses: AGPL-1.0-only, AGPL-3.0-only
-
   integration:
     name: Container and VictoriaLogs integration
     needs:
       - workflow-lint
-      - backend
-      - frontend
+      - api
+      - web
       - helm
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Validate Dockerfile with BuildKit
-        run: docker build --check .
+      - name: Install Just
+        uses: taiki-e/install-action@c44f6b046f1c29ae5918b1e0bfdbb2f1813836fd # v2.84.1
+        with:
+          tool: just@1.57.0
+          fallback: none
+      - name: Validate Dockerfiles with BuildKit
+        run: |
+          docker build --check --file api.Dockerfile .
+          docker build --check --file web.Dockerfile .
       - name: Run pinned VictoriaLogs integration suite
-        run: make integration-test
-      - name: Verify final image user
+        run: just integration-test
+      - name: Verify final image users
         shell: bash
         run: |
-          image_user="$(docker image inspect vesta:local --format '{{.Config.User}}')"
-          if [[ "$image_user" != "10001:10001" ]]; then
-            echo "Expected image user 10001:10001, got $image_user"
-            exit 1
-          fi
+          for image in vesta-api:local vesta-web:local; do
+            image_user="$(docker image inspect "$image" --format '{{.Config.User}}')"
+            if [[ "$image_user" != "65532" ]]; then
+              echo "Expected $image user 65532, got $image_user"
+              exit 1
+            fi
+          done

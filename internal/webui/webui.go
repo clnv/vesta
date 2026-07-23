@@ -2,8 +2,7 @@ package webui
 
 import "embed"
 
-// Files contains the production Vite build so the Go binary can serve the UI
-// without a second runtime or sidecar.
+// Files contains the production Vite build served by the web gateway.
 //
 //go:embed dist/*
 var Files embed.FS

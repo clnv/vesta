@@ -28,6 +28,8 @@ until curl -fsS http://localhost:19428/health >/dev/null 2>&1 && curl -fsS http:
   sleep 1
 done
 
+curl -fsS http://localhost:18080/ | grep -q '<div id="root"></div>'
+
 curl -fsS -X POST \
   -H 'Content-Type: application/stream+json' -H 'AccountID: 12' -H 'ProjectID: 34' \
   --data-binary '{"_time":"0","_msg":"checkout failed","service":"payments-api","level":"error","password_hash":"must-not-leak"}

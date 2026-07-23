@@ -9,15 +9,28 @@ services:
     volumes:
       - victoria-logs-data:/victoria-logs-data
 
-  vesta:
-    image: vesta:local
-    build: .
+  vesta-api:
+    image: vesta-api:local
+    build:
+      context: .
+      dockerfile: api.Dockerfile
     depends_on:
       - victorialogs
-    ports:
-      - "18080:8080"
     volumes:
       - ./config.compose.yml:/etc/vesta/config.yml:ro
+
+  vesta-web:
+    image: vesta-web:local
+    build:
+      context: .
+      dockerfile: web.Dockerfile
+    command:
+      - -api-url
+      - http://vesta-api:8080
+    depends_on:
+      - vesta-api
+    ports:
+      - "18080:8081"
 
 volumes:
   victoria-logs-data:

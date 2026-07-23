@@ -2,6 +2,7 @@
 node_modules
 web/node_modules
 web/tsconfig.tsbuildinfo
+internal/webui/dist
 coverage
 config.local.yml
-vesta
+bin
