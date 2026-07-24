@@ -2,7 +2,7 @@ apiVersion: v2
 name: vesta
 description: Self-hosted LogsQL explorer for VictoriaLogs
 type: application
-version: 0.4.1
+version: 0.0.1
 appVersion: "0.0.1"
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/vesta-explorer/vesta
