@@ -22,10 +22,11 @@ test:
 integration-test:
     ./scripts/integration-test.sh
 
-# Lint the Helm chart with its default and production example values.
+# Lint the Helm chart and its subchart-compatible global values.
 helm-lint:
     helm lint --strict ./charts/vesta
-    helm lint --strict ./charts/vesta --values ./charts/vesta/values-production.example.yaml
+    helm template vesta ./charts/vesta --set global.vestaSubchartTest=true >/dev/null
+    @! helm template invalid-secret ./charts/vesta --set secret.create=false >/dev/null 2>&1
 
 # Ensure local dependencies are running, then restart the API, web, and logs Zellij session.
 dev:

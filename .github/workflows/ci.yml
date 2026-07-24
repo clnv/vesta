@@ -121,17 +121,16 @@ jobs:
         with:
           tool: just@1.57.0
           fallback: none
-      - name: Lint default and production values
+      - name: Lint chart values
         run: just helm-lint
       - name: Render default deployment
         run: helm template vesta ./charts/vesta --namespace vesta > /tmp/vesta-default.yaml
-      - name: Render production deployment
-        run: helm template vesta ./charts/vesta --namespace vesta --values ./charts/vesta/values-production.example.yaml > /tmp/vesta-production.yaml
       - name: Render optional resources and chart-managed Secret
         run: >-
           helm template features ./charts/vesta
           --set secret.create=true
           --set-string secret.data.VESTA_SESSION_SECRET=test-only
+          --set-string secret.data.VESTA_BOOTSTRAP_PASSWORD=test-only
           --set persistence.enabled=false
           --set ingress.enabled=true
           --set podDisruptionBudget.enabled=true

@@ -83,6 +83,8 @@ helm upgrade --install vesta "${root}/charts/vesta" \
   --set web.image.repository=vesta-web \
   --set web.image.tag=local \
   --set web.image.pullPolicy=Never \
+  --set-string secret.data.VESTA_SESSION_SECRET=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY= \
+  --set-string secret.data.VESTA_BOOTSTRAP_PASSWORD=vesta-local-password \
   --set persistence.enabled=false \
   --set-string "config.data.server.external_url=${base_url}" \
   --wait \
