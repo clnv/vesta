@@ -1,9 +1,9 @@
 import { expect, it } from "vitest";
-import { privateShareURL, shareTokenFromHash } from "./share";
+import { shareTokenFromHash, shareURL } from "./share";
 
-it("builds and reads an opaque private share URL", () => {
+it("builds and reads an opaque share URL", () => {
   const token = "abcdefghijklmnopqrstuvwx12345678";
-  const url = privateShareURL(token, { origin: "https://logs.example.com", pathname: "/" });
+  const url = shareURL(token, { origin: "https://logs.example.com", pathname: "/" });
   const hash = new URL(url).hash;
 
   expect(shareTokenFromHash(hash)).toBe(token);

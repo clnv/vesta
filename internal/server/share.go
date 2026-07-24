@@ -23,11 +23,10 @@ type shareAudience struct {
 }
 
 type sharedQuery struct {
-	Query      string        `json:"query"`
-	SourceID   string        `json:"sourceId"`
-	Tenant     tenantRequest `json:"tenant"`
-	Title      string        `json:"title"`
-	ResultMode string        `json:"resultMode"`
+	Query      string `json:"query"`
+	SourceID   string `json:"sourceId"`
+	Title      string `json:"title"`
+	ResultMode string `json:"resultMode"`
 }
 
 type createShareRequest struct {
@@ -49,22 +48,26 @@ func (s *Server) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, message)
 		return
 	}
-	if _, _, allowed := s.authorize(user, queryRequest{
+	if _, allowed := s.authorize(user, queryRequest{
 		SourceID: input.Payload.SourceID,
-		Tenant:   input.Payload.Tenant,
 		Query:    input.Payload.Query,
 	}); !allowed {
-		writeJSONError(w, http.StatusForbidden, "you cannot share this source or tenant")
+		writeJSONError(w, http.StatusForbidden, "you cannot share this source")
 		return
 	}
 
 	input.Audience.Type = strings.ToLower(strings.TrimSpace(input.Audience.Type))
 	input.Audience.Value = strings.TrimSpace(input.Audience.Value)
+	if input.Audience.Type == "" {
+		input.Audience.Type = "system"
+	}
 	if len(input.Audience.Value) > 320 {
 		writeJSONError(w, http.StatusBadRequest, "share audience is too long")
 		return
 	}
 	switch input.Audience.Type {
+	case "system":
+		input.Audience.Value = "*"
 	case "user":
 		if input.Audience.Value == "" {
 			writeJSONError(w, http.StatusBadRequest, "a user email or subject is required")
@@ -96,7 +99,7 @@ func (s *Server) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	default:
-		writeJSONError(w, http.StatusBadRequest, "share audience must be a user or team")
+		writeJSONError(w, http.StatusBadRequest, "share audience must be system, user, or team")
 		return
 	}
 
@@ -150,7 +153,7 @@ func (s *Server) handleOpenShare(w http.ResponseWriter, r *http.Request) {
 	}
 	audience := shareAudience{Type: record.AudienceType, Value: record.AudienceValue}
 	if !shareVisibleTo(audience, user) {
-		writeJSONError(w, http.StatusForbidden, "this share was not addressed to your user or teams")
+		writeJSONError(w, http.StatusForbidden, "this share is not available to your account")
 		return
 	}
 	var payload sharedQuery
@@ -158,21 +161,15 @@ func (s *Server) handleOpenShare(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "share link is invalid or expired")
 		return
 	}
-	source, tenant, allowed := s.authorize(user, queryRequest{
+	source, allowed := s.authorize(user, queryRequest{
 		SourceID: payload.SourceID,
-		Tenant:   payload.Tenant,
 		Query:    payload.Query,
 	})
 	if !allowed {
-		writeJSONError(w, http.StatusForbidden, "you are not authorized for the source or tenant in this share")
+		writeJSONError(w, http.StatusForbidden, "you are not authorized for the source in this share")
 		return
 	}
 	payload.SourceID = source.ID
-	payload.Tenant = tenantRequest{
-		AccountID: tenant.AccountID,
-		ProjectID: tenant.ProjectID,
-		Name:      tenant.Name,
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"payload":   payload,
 		"expiresAt": record.ExpiresAt.Unix(),
@@ -181,7 +178,7 @@ func (s *Server) handleOpenShare(w http.ResponseWriter, r *http.Request) {
 
 func validateSharedQuery(payload sharedQuery) string {
 	payload.Query = strings.TrimSpace(payload.Query)
-	if payload.SourceID == "" || payload.Tenant.AccountID == "" || payload.Tenant.ProjectID == "" || payload.Query == "" {
+	if payload.SourceID == "" || payload.Query == "" {
 		return "share payload is incomplete"
 	}
 	if len(payload.Query) > maxShareQueryBytes || len(payload.Title) > maxShareTitleBytes {
@@ -195,6 +192,8 @@ func validateSharedQuery(payload sharedQuery) string {
 
 func shareVisibleTo(audience shareAudience, user auth.User) bool {
 	switch audience.Type {
+	case "system":
+		return true
 	case "user":
 		return audience.Value == user.Subject
 	case "team":

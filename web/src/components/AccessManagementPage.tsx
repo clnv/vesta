@@ -42,10 +42,7 @@ function intersects(left: string[] | null | undefined, right: string[] | null | 
 }
 
 function effectiveSourceCount(user: DirectoryUser, catalog: PermissionCatalog): number {
-  return (catalog.sources ?? []).filter((source) => (
-    intersects(user.roles, source.roles) &&
-    (source.tenants ?? []).some((tenant) => (tenant.roles?.length ?? 0) === 0 || intersects(user.roles, tenant.roles))
-  )).length;
+  return (catalog.sources ?? []).filter((source) => intersects(user.roles, source.roles)).length;
 }
 
 export function AccessManagementPage({
@@ -551,7 +548,7 @@ function PermissionsView({ directory, catalog }: { directory: Directory; catalog
         <div><span className="eyebrow">READ-ONLY CONFIGURATION</span><h2 id="permissions-heading">Permissions</h2><p>Role policy comes from the Vesta server configuration. Assign roles on the Users tab.</p></div>
         <span className="policy-badge"><ShieldCheck size={14} /> Default deny</span>
       </div>
-      <div className="permission-explainer"><CircleAlert size={16} /><p>A user needs at least one source role. If a tenant lists additional roles, the user also needs at least one of those tenant roles.</p></div>
+      <div className="permission-explainer"><CircleAlert size={16} /><p>A user needs at least one configured role for a source. Accounts without a matching source role are denied access.</p></div>
       <div className="permission-role-grid">
         {catalog.roles.map((role) => {
           const users = directory.users.filter((user) => user.roles.includes(role));
@@ -561,13 +558,10 @@ function PermissionsView({ directory, catalog }: { directory: Directory; catalog
       </div>
       <div className="permission-layout">
         <div className="policy-map">
-          <div className="policy-column-heading"><div><span className="eyebrow">POLICY MAP</span><h3>Sources and tenants</h3></div><small>{catalog.sources.length} sources</small></div>
+          <div className="policy-column-heading"><div><span className="eyebrow">POLICY MAP</span><h3>Sources</h3></div><small>{catalog.sources.length} sources</small></div>
           {catalog.sources.map((source) => (
             <article className="policy-source" key={source.id}>
               <header><div><span className="connection-pulse" /><strong>{source.name}</strong><code>{source.id}</code></div><RoleChips roles={source.roles} empty="No source roles" /></header>
-              <div className="policy-tenants">
-                {source.tenants.map((tenant) => <div key={`${tenant.accountId}:${tenant.projectId}`}><span><strong>{tenant.name}</strong><small>{tenant.accountId}:{tenant.projectId}</small></span><RoleChips roles={tenant.roles} empty="No additional role" /></div>)}
-              </div>
             </article>
           ))}
         </div>

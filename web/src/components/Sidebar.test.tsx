@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { TeamLibrary, TeamQuery } from "../types";
+import type { HistoryEntry, PersonalQuery, TeamLibrary, TeamQuery } from "../types";
 import { Sidebar } from "./Sidebar";
 
 afterEach(cleanup);
@@ -11,9 +11,6 @@ const star: TeamQuery = {
   title: "Recent errors",
   query: "_time:1h level:error",
   sourceId: "logs",
-  tenantAccountId: "1",
-  tenantProjectId: "2",
-  tenantName: "Production",
   resultMode: "table",
   createdBy: "user-1",
   createdAt: "2026-07-23T00:00:00Z",
@@ -32,17 +29,64 @@ const libraries: TeamLibrary[] = [{
   queries: [star],
 }];
 
-describe("Sidebar team stars", () => {
+const privateStar: PersonalQuery = {
+  id: "private-star-1",
+  title: "My investigation",
+  query: "_time:30m warning",
+  sourceId: "logs",
+  resultMode: "table",
+  createdAt: "2026-07-23T00:00:00Z",
+  updatedAt: "2026-07-23T00:00:00Z",
+};
+
+describe("Sidebar history", () => {
+  it("renders a compact query preview and keeps the full query available", () => {
+    const onRecall = vi.fn();
+    const history: HistoryEntry = {
+      id: "history-1",
+      query: "_time:1h\n  | stats by (service) count()",
+      sourceId: "logs",
+      executedAt: new Date("2026-07-23T00:00:00Z").getTime(),
+      status: "complete",
+      elapsedMs: 27,
+    };
+    render(
+      <Sidebar
+        mode="history"
+        onMode={vi.fn()}
+        history={[history]}
+        personalQueries={[]}
+        teamLibraries={[]}
+        onRecall={onRecall}
+        onOpenStar={vi.fn()}
+        onEditPersonalStar={vi.fn()}
+        onEditTeamStar={vi.fn()}
+        onCreateFolder={vi.fn()}
+        onClearHistory={vi.fn()}
+      />,
+    );
+
+    const preview = screen.getByText("_time:1h | stats by (service) count()");
+    expect(preview).toHaveAttribute("title", history.query);
+    expect(screen.getByText("27ms")).toBeInTheDocument();
+    fireEvent.click(preview);
+    expect(onRecall).toHaveBeenCalledWith(history);
+  });
+});
+
+describe("Sidebar stars", () => {
   it("opens a selected team star for reuse", () => {
-    const onOpenTeamStar = vi.fn();
+    const onOpenStar = vi.fn();
     render(
       <Sidebar
         mode="stars"
         onMode={vi.fn()}
         history={[]}
+        personalQueries={[]}
         teamLibraries={libraries}
         onRecall={vi.fn()}
-        onOpenTeamStar={onOpenTeamStar}
+        onOpenStar={onOpenStar}
+        onEditPersonalStar={vi.fn()}
         onEditTeamStar={vi.fn()}
         onCreateFolder={vi.fn()}
         onClearHistory={vi.fn()}
@@ -50,9 +94,10 @@ describe("Sidebar team stars", () => {
     );
 
     expect(screen.getByRole("button", { name: "Stars" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Team stars" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Starred queries" })).toBeInTheDocument();
+    expect(screen.getByText("Private to you")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open Recent errors in a new tab" }));
-    expect(onOpenTeamStar).toHaveBeenCalledWith(star);
+    expect(onOpenStar).toHaveBeenCalledWith(star);
   });
 
   it("renames a star and moves it to another folder", async () => {
@@ -62,9 +107,11 @@ describe("Sidebar team stars", () => {
         mode="stars"
         onMode={vi.fn()}
         history={[]}
+        personalQueries={[]}
         teamLibraries={libraries}
         onRecall={vi.fn()}
-        onOpenTeamStar={vi.fn()}
+        onOpenStar={vi.fn()}
+        onEditPersonalStar={vi.fn()}
         onEditTeamStar={onEditTeamStar}
         onCreateFolder={vi.fn()}
         onClearHistory={vi.fn()}
@@ -77,5 +124,31 @@ describe("Sidebar team stars", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save star" }));
 
     await waitFor(() => expect(onEditTeamStar).toHaveBeenCalledWith(star, "Priority errors", "folder-1"));
+  });
+
+  it("shows and renames the current user's private stars without team folders", async () => {
+    const onEditPersonalStar = vi.fn().mockResolvedValue(true);
+    render(
+      <Sidebar
+        mode="stars"
+        onMode={vi.fn()}
+        history={[]}
+        personalQueries={[privateStar]}
+        teamLibraries={[]}
+        onRecall={vi.fn()}
+        onOpenStar={vi.fn()}
+        onEditPersonalStar={onEditPersonalStar}
+        onEditTeamStar={vi.fn()}
+        onCreateFolder={vi.fn()}
+        onClearHistory={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit My investigation" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Star name" }), { target: { value: "My renamed investigation" } });
+    expect(screen.queryByRole("combobox", { name: "Star folder" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save star" }));
+
+    await waitFor(() => expect(onEditPersonalStar).toHaveBeenCalledWith(privateStar, "My renamed investigation"));
   });
 });

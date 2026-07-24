@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -50,7 +51,6 @@ type LimitsConfig struct {
 	MaxRows           int      `yaml:"max_rows"`
 	MaxBytes          int64    `yaml:"max_bytes"`
 	MaxQueriesPerUser int      `yaml:"max_queries_per_user"`
-	MaxTailsPerUser   int      `yaml:"max_tails_per_user"`
 	MaxLineBytes      int      `yaml:"max_line_bytes"`
 }
 
@@ -59,19 +59,11 @@ type SourceConfig struct {
 	Name         string       `yaml:"name"`
 	URL          string       `yaml:"url"`
 	Roles        []string     `yaml:"roles"`
-	Tenants      []Tenant     `yaml:"tenants"`
+	AccountID    string       `yaml:"account_id"`
+	ProjectID    string       `yaml:"project_id"`
 	Auth         UpstreamAuth `yaml:"auth"`
 	HiddenFields []string     `yaml:"hidden_fields"`
 }
-
-type Tenant struct {
-	AccountID string   `yaml:"account_id" json:"accountId"`
-	ProjectID string   `yaml:"project_id" json:"projectId"`
-	Name      string   `yaml:"name" json:"name"`
-	Roles     []string `yaml:"roles" json:"-"`
-}
-
-func (t Tenant) Key() string { return t.AccountID + ":" + t.ProjectID }
 
 type UpstreamAuth struct {
 	Type        string `yaml:"type"`
@@ -97,7 +89,9 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	var cfg Config
-	if err := yaml.Unmarshal(contents, &cfg); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(contents))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("parse configuration: %w", err)
 	}
 	applyDefaults(&cfg)
@@ -149,9 +143,6 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Limits.MaxQueriesPerUser == 0 {
 		cfg.Limits.MaxQueriesPerUser = 4
-	}
-	if cfg.Limits.MaxTailsPerUser == 0 {
-		cfg.Limits.MaxTailsPerUser = 2
 	}
 	if cfg.Limits.MaxLineBytes == 0 {
 		cfg.Limits.MaxLineBytes = 8 << 20
@@ -210,22 +201,11 @@ func (cfg *Config) Validate() error {
 			return fmt.Errorf("source %q has an invalid url", source.ID)
 		}
 		source.URL = strings.TrimRight(source.URL, "/")
-		if len(source.Roles) == 0 || len(source.Tenants) == 0 {
-			return fmt.Errorf("source %q requires at least one access role and tenant", source.ID)
+		if len(source.Roles) == 0 {
+			return fmt.Errorf("source %q requires at least one access role", source.ID)
 		}
-		seenTenants := map[string]struct{}{}
-		for j := range source.Tenants {
-			tenant := &source.Tenants[j]
-			if tenant.AccountID == "" || tenant.ProjectID == "" {
-				return fmt.Errorf("source %q tenant %d requires account_id and project_id", source.ID, j)
-			}
-			if tenant.Name == "" {
-				tenant.Name = tenant.Key()
-			}
-			if _, exists := seenTenants[tenant.Key()]; exists {
-				return fmt.Errorf("source %q has duplicate tenant %q", source.ID, tenant.Key())
-			}
-			seenTenants[tenant.Key()] = struct{}{}
+		if (source.AccountID == "") != (source.ProjectID == "") {
+			return fmt.Errorf("source %q must set both account_id and project_id or neither", source.ID)
 		}
 		if err := validateUpstreamAuth(*source); err != nil {
 			return err

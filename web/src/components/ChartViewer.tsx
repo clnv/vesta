@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { orderedColumns } from "../lib/format";
 import type { RenderDirective } from "../lib/logsql";
 
@@ -41,11 +41,42 @@ const COLORS = [
   "#7b5cc7", "#d1a325", "#3182a4", "#ba5744", "#5d8b73",
 ];
 
-const WIDTH = 960;
-const HEIGHT = 430;
+const DEFAULT_WIDTH = 960;
+const DEFAULT_HEIGHT = 430;
+const MIN_WIDTH = 360;
+const MIN_HEIGHT = 220;
 const MARGIN = { top: 24, right: 30, bottom: 64, left: 74 };
-const PLOT_WIDTH = WIDTH - MARGIN.left - MARGIN.right;
-const PLOT_HEIGHT = HEIGHT - MARGIN.top - MARGIN.bottom;
+
+function useChartDimensions(minHeight = MIN_HEIGHT) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dimensions, setDimensions] = useState({ width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT });
+
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const update = (width: number, height: number) => {
+      if (width <= 0 || height <= 0) return;
+      const next = {
+        width: Math.max(MIN_WIDTH, Math.round(width)),
+        height: Math.max(minHeight, Math.round(height)),
+      };
+      setDimensions((current) =>
+        current.width === next.width && current.height === next.height ? current : next);
+    };
+    const bounds = container.getBoundingClientRect();
+    update(bounds.width, bounds.height);
+
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) update(entry.contentRect.width, entry.contentRect.height);
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [minHeight]);
+
+  return { containerRef, ...dimensions };
+}
 
 function asNumber(value: unknown): number | null {
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
@@ -238,6 +269,7 @@ function ChartHeading({ directive, model }: { directive: RenderDirective; model:
 }
 
 function CartesianChart({ directive, model }: { directive: RenderDirective; model: ChartModel }) {
+  const { containerRef, width: chartWidth, height: chartHeight } = useChartDimensions();
   const allPoints = model.series.flatMap((series) => series.points);
   if (allPoints.length === 0 || model.yColumns.length === 0) {
     return <ChartMessage>Chart data needs an x-axis column and at least one numeric y-axis column.</ChartMessage>;
@@ -274,11 +306,13 @@ function CartesianChart({ directive, model }: { directive: RenderDirective; mode
 
   const xMin = rawXMin;
   const xMax = rawXMax;
+  const plotWidth = Math.max(1, chartWidth - MARGIN.left - MARGIN.right);
+  const plotHeight = Math.max(1, chartHeight - MARGIN.top - MARGIN.bottom);
   const categoryCount = new Set(allPoints.map((point) => point.x)).size;
   const scaleX = (value: number) => model.continuousX
-    ? MARGIN.left + (value - xMin) / (xMax - xMin) * PLOT_WIDTH
-    : MARGIN.left + (value + 0.5) / Math.max(1, categoryCount) * PLOT_WIDTH;
-  const scaleY = (value: number) => MARGIN.top + (yMax - value) / (yMax - yMin) * PLOT_HEIGHT;
+    ? MARGIN.left + (value - xMin) / (xMax - xMin) * plotWidth
+    : MARGIN.left + (value + 0.5) / Math.max(1, categoryCount) * plotWidth;
+  const scaleY = (value: number) => MARGIN.top + (yMax - value) / (yMax - yMin) * plotHeight;
   const yTicks = Array.from({ length: 5 }, (_, index) => yMin + (yMax - yMin) * index / 4);
   const xTickValues = model.continuousX
     ? Array.from({ length: 5 }, (_, index) => xMin + (xMax - xMin) * index / 4)
@@ -296,41 +330,49 @@ function CartesianChart({ directive, model }: { directive: RenderDirective; mode
   }
 
   const uniqueX = [...new Set(allPoints.map((point) => point.x))].sort((a, b) => a - b);
-  const columnStep = PLOT_WIDTH / Math.max(1, uniqueX.length);
+  const columnStep = plotWidth / Math.max(1, uniqueX.length);
   const columnWidth = Math.min(54, columnStep * 0.78);
 
   return (
     <div className="chart-view">
       <ChartHeading directive={directive} model={model} />
-      <svg className="chart-svg" viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" aria-label={`${type} visualization`}>
-        {yTicks.map((tick) => (
-          <g key={tick}>
-            <line className="chart-grid" x1={MARGIN.left} x2={WIDTH - MARGIN.right} y1={scaleY(tick)} y2={scaleY(tick)} />
-            <text className="chart-tick chart-y-tick" x={MARGIN.left - 12} y={scaleY(tick) + 4}>{formatNumber(tick)}</text>
-          </g>
-        ))}
-        {xTickValues.map((tick, index) => (
-          <g key={tick}>
-            <line className="chart-axis-mark" x1={scaleX(tick)} x2={scaleX(tick)} y1={HEIGHT - MARGIN.bottom} y2={HEIGHT - MARGIN.bottom + 5} />
-            <text
-              className="chart-tick chart-x-tick"
-              x={scaleX(tick)}
-              y={HEIGHT - MARGIN.bottom + 20}
-              textAnchor={model.continuousX
-                ? index === 0
-                  ? "start"
-                  : index === xTickValues.length - 1
-                    ? "end"
-                    : "middle"
-                : "middle"}
-              aria-label={model.timeX ? new Date(tick).toLocaleString() : undefined}
-            >
-              {formatXTick(tick)}
-            </text>
-          </g>
-        ))}
-        <line className="chart-axis" x1={MARGIN.left} x2={MARGIN.left} y1={MARGIN.top} y2={HEIGHT - MARGIN.bottom} />
-        <line className="chart-axis" x1={MARGIN.left} x2={WIDTH - MARGIN.right} y1={HEIGHT - MARGIN.bottom} y2={HEIGHT - MARGIN.bottom} />
+      <div className="chart-canvas" ref={containerRef}>
+        <svg
+          className="chart-svg"
+          width={chartWidth}
+          height={chartHeight}
+          viewBox={`0 0 ${chartWidth} ${chartHeight}`}
+          role="img"
+          aria-label={`${type} visualization`}
+        >
+          {yTicks.map((tick) => (
+            <g key={tick}>
+              <line className="chart-grid" x1={MARGIN.left} x2={chartWidth - MARGIN.right} y1={scaleY(tick)} y2={scaleY(tick)} />
+              <text className="chart-tick chart-y-tick" x={MARGIN.left - 12} y={scaleY(tick) + 4}>{formatNumber(tick)}</text>
+            </g>
+          ))}
+          {xTickValues.map((tick, index) => (
+            <g key={tick}>
+              <line className="chart-axis-mark" x1={scaleX(tick)} x2={scaleX(tick)} y1={chartHeight - MARGIN.bottom} y2={chartHeight - MARGIN.bottom + 5} />
+              <text
+                className="chart-tick chart-x-tick"
+                x={scaleX(tick)}
+                y={chartHeight - MARGIN.bottom + 20}
+                textAnchor={model.continuousX
+                  ? index === 0
+                    ? "start"
+                    : index === xTickValues.length - 1
+                      ? "end"
+                      : "middle"
+                  : "middle"}
+                aria-label={model.timeX ? new Date(tick).toLocaleString() : undefined}
+              >
+                {formatXTick(tick)}
+              </text>
+            </g>
+          ))}
+          <line className="chart-axis" x1={MARGIN.left} x2={MARGIN.left} y1={MARGIN.top} y2={chartHeight - MARGIN.bottom} />
+          <line className="chart-axis" x1={MARGIN.left} x2={chartWidth - MARGIN.right} y1={chartHeight - MARGIN.bottom} y2={chartHeight - MARGIN.bottom} />
 
         {type === "columnchart" && uniqueX.flatMap((x, xIndex) => {
           let positiveStack = 0;
@@ -405,13 +447,14 @@ function CartesianChart({ directive, model }: { directive: RenderDirective; mode
           </g>
         ))}
 
-        <text className="chart-axis-title chart-x-title" x={MARGIN.left + PLOT_WIDTH / 2} y={HEIGHT - 13}>
-          {directive.properties.xtitle || model.xColumn}
-        </text>
-        <text className="chart-axis-title chart-y-title" transform={`translate(18 ${MARGIN.top + PLOT_HEIGHT / 2}) rotate(-90)`}>
-          {directive.properties.ytitle || (model.yColumns.length === 1 ? model.yColumns[0] : "Value")}
-        </text>
-      </svg>
+          <text className="chart-axis-title chart-x-title" x={MARGIN.left + plotWidth / 2} y={chartHeight - 13}>
+            {directive.properties.xtitle || model.xColumn}
+          </text>
+          <text className="chart-axis-title chart-y-title" transform={`translate(18 ${MARGIN.top + plotHeight / 2}) rotate(-90)`}>
+            {directive.properties.ytitle || (model.yColumns.length === 1 ? model.yColumns[0] : "Value")}
+          </text>
+        </svg>
+      </div>
     </div>
   );
 }
@@ -428,13 +471,14 @@ function HorizontalBars({
   yMax: number;
 }) {
   const categories = [...new Set(model.series.flatMap((series) => series.points.map((point) => point.xLabel)))];
+  const contentHeight = Math.max(320, categories.length * Math.max(28, model.series.length * 15) + 110);
+  const { containerRef, width, height } = useChartDimensions(contentHeight);
   if (categories.length === 0) return <ChartMessage>Bar chart data has no categories to display.</ChartMessage>;
-  const height = Math.max(320, categories.length * Math.max(28, model.series.length * 15) + 110);
   const top = 24;
   const bottom = 45;
   const left = 150;
   const right = 35;
-  const plotWidth = WIDTH - left - right;
+  const plotWidth = width - left - right;
   const plotHeight = height - top - bottom;
   const scale = (value: number) => left + (value - yMin) / (yMax - yMin) * plotWidth;
   const categoryHeight = plotHeight / categories.length;
@@ -446,66 +490,72 @@ function HorizontalBars({
   return (
     <div className="chart-view">
       <ChartHeading directive={directive} model={model} />
-      <svg className="chart-svg chart-svg-bars" viewBox={`0 0 ${WIDTH} ${height}`} role="img" aria-label="barchart visualization">
-        {Array.from({ length: 5 }, (_, index) => yMin + (yMax - yMin) * index / 4).map((tick) => (
-          <g key={tick}>
-            <line className="chart-grid" x1={scale(tick)} x2={scale(tick)} y1={top} y2={height - bottom} />
-            <text className="chart-tick chart-x-tick" x={scale(tick)} y={height - bottom + 20} textAnchor="middle">{formatNumber(tick)}</text>
-          </g>
-        ))}
-        {categories.map((category, categoryIndex) => {
-          let positiveStack = 0;
-          let negativeStack = 0;
-          return (
-            <g key={category}>
-              <text className="chart-tick chart-category-tick" x={left - 12} y={top + categoryHeight * (categoryIndex + 0.5) + 4}>{category}</text>
-              {model.series.map((series, seriesIndex) => {
-                const point = series.points.find((candidate) => candidate.xLabel === category);
-                if (!point) return null;
-                const base = stacked ? (point.y >= 0 ? positiveStack : negativeStack) : 0;
-                const next = base + point.y;
-                if (stacked) {
-                  if (point.y >= 0) positiveStack = next;
-                  else negativeStack = next;
-                }
-                const start = scale(Math.min(base, next));
-                const end = scale(Math.max(base, next));
-                return (
-                  <rect
-                    className="chart-bar"
-                    key={series.key}
-                    x={start}
-                    y={stacked
-                      ? top + categoryHeight * categoryIndex + (categoryHeight - barHeight) / 2
-                      : top + categoryHeight * categoryIndex + (categoryHeight - barHeight * model.series.length) / 2 + barHeight * seriesIndex}
-                    width={Math.max(1, end - start)}
-                    height={Math.max(2, barHeight - 2)}
-                    fill={series.color}
-                  >
-                    <title>{`${category} · ${series.label}: ${formatNumber(point.y)}`}</title>
-                  </rect>
-                );
-              })}
+      <div className="chart-canvas" ref={containerRef}>
+        <svg className="chart-svg chart-svg-bars" width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="barchart visualization">
+          {Array.from({ length: 5 }, (_, index) => yMin + (yMax - yMin) * index / 4).map((tick) => (
+            <g key={tick}>
+              <line className="chart-grid" x1={scale(tick)} x2={scale(tick)} y1={top} y2={height - bottom} />
+              <text className="chart-tick chart-x-tick" x={scale(tick)} y={height - bottom + 20} textAnchor="middle">{formatNumber(tick)}</text>
             </g>
-          );
-        })}
-        <line className="chart-axis" x1={scale(0)} x2={scale(0)} y1={top} y2={height - bottom} />
-      </svg>
+          ))}
+          {categories.map((category, categoryIndex) => {
+            let positiveStack = 0;
+            let negativeStack = 0;
+            return (
+              <g key={category}>
+                <text className="chart-tick chart-category-tick" x={left - 12} y={top + categoryHeight * (categoryIndex + 0.5) + 4}>{category}</text>
+                {model.series.map((series, seriesIndex) => {
+                  const point = series.points.find((candidate) => candidate.xLabel === category);
+                  if (!point) return null;
+                  const base = stacked ? (point.y >= 0 ? positiveStack : negativeStack) : 0;
+                  const next = base + point.y;
+                  if (stacked) {
+                    if (point.y >= 0) positiveStack = next;
+                    else negativeStack = next;
+                  }
+                  const start = scale(Math.min(base, next));
+                  const end = scale(Math.max(base, next));
+                  return (
+                    <rect
+                      className="chart-bar"
+                      key={series.key}
+                      x={start}
+                      y={stacked
+                        ? top + categoryHeight * categoryIndex + (categoryHeight - barHeight) / 2
+                        : top + categoryHeight * categoryIndex + (categoryHeight - barHeight * model.series.length) / 2 + barHeight * seriesIndex}
+                      width={Math.max(1, end - start)}
+                      height={Math.max(2, barHeight - 2)}
+                      fill={series.color}
+                    >
+                      <title>{`${category} · ${series.label}: ${formatNumber(point.y)}`}</title>
+                    </rect>
+                  );
+                })}
+              </g>
+            );
+          })}
+          <line className="chart-axis" x1={scale(0)} x2={scale(0)} y1={top} y2={height - bottom} />
+        </svg>
+      </div>
     </div>
   );
 }
 
 function PieChart({ directive, model }: { directive: RenderDirective; model: ChartModel }) {
   const series = model.series[0];
-  if (!series) return <ChartMessage>Pie chart data needs a category column followed by a numeric column.</ChartMessage>;
   const values = new Map<string, number>();
-  series.points.forEach((point) => values.set(point.xLabel, (values.get(point.xLabel) ?? 0) + Math.max(0, point.y)));
+  series?.points.forEach((point) => values.set(point.xLabel, (values.get(point.xLabel) ?? 0) + Math.max(0, point.y)));
   const slices = [...values].filter(([, value]) => value > 0);
+  const { containerRef, width, height } = useChartDimensions(Math.max(MIN_HEIGHT, slices.length * 29 + 70));
+  if (!series) return <ChartMessage>Pie chart data needs a category column followed by a numeric column.</ChartMessage>;
   const total = slices.reduce((sum, [, value]) => sum + value, 0);
   if (total <= 0) return <ChartMessage>Pie chart values must include at least one positive number.</ChartMessage>;
-  const centerX = 330;
-  const centerY = 215;
-  const radius = 155;
+  const centerX = width * 0.3;
+  const centerY = height / 2;
+  const radius = Math.max(48, Math.min(height * 0.38, width * 0.22));
+  const legendX = Math.max(centerX + radius + 28, width * 0.55);
+  const legendY = Math.max(20, centerY - slices.length * 29 / 2);
+  const legendValueX = Math.max(80, width - legendX - 20);
   let angle = -Math.PI / 2;
   const arc = (start: number, end: number) => {
     const startX = centerX + Math.cos(start) * radius;
@@ -518,26 +568,28 @@ function PieChart({ directive, model }: { directive: RenderDirective; model: Cha
   return (
     <div className="chart-view">
       {directive.properties.title && <h3 className="chart-title">{directive.properties.title}</h3>}
-      <svg className="chart-svg" viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" aria-label="piechart visualization">
-        {slices.map(([label, value], index) => {
-          const start = angle;
-          const end = angle + value / total * Math.PI * 2;
-          angle = end;
-          const color = COLORS[index % COLORS.length];
-          return (
-            <path className="chart-slice" key={label} d={arc(start, end)} fill={color}>
-              <title>{`${label}: ${formatNumber(value)} (${(value / total * 100).toFixed(1)}%)`}</title>
-            </path>
-          );
-        })}
-        {slices.map(([label, value], index) => (
-          <g key={`${label}-legend`} transform={`translate(565 ${70 + index * 29})`}>
-            <rect width="11" height="11" rx="2" fill={COLORS[index % COLORS.length]} />
-            <text className="chart-pie-label" x="19" y="10">{label}</text>
-            <text className="chart-pie-value" x="330" y="10">{`${formatNumber(value)} · ${(value / total * 100).toFixed(1)}%`}</text>
-          </g>
-        ))}
-      </svg>
+      <div className="chart-canvas" ref={containerRef}>
+        <svg className="chart-svg" width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="piechart visualization">
+          {slices.map(([label, value], index) => {
+            const start = angle;
+            const end = angle + value / total * Math.PI * 2;
+            angle = end;
+            const color = COLORS[index % COLORS.length];
+            return (
+              <path className="chart-slice" key={label} d={arc(start, end)} fill={color}>
+                <title>{`${label}: ${formatNumber(value)} (${(value / total * 100).toFixed(1)}%)`}</title>
+              </path>
+            );
+          })}
+          {slices.map(([label, value], index) => (
+            <g key={`${label}-legend`} transform={`translate(${legendX} ${legendY + index * 29})`}>
+              <rect width="11" height="11" rx="2" fill={COLORS[index % COLORS.length]} />
+              <text className="chart-pie-label" x="19" y="10">{label}</text>
+              <text className="chart-pie-value" x={legendValueX} y="10">{`${formatNumber(value)} · ${(value / total * 100).toFixed(1)}%`}</text>
+            </g>
+          ))}
+        </svg>
+      </div>
     </div>
   );
 }

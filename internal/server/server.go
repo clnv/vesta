@@ -23,29 +23,21 @@ type Server struct {
 	metrics *metrics
 }
 
-type tenantRequest struct {
-	AccountID string `json:"accountId"`
-	ProjectID string `json:"projectId"`
-	Name      string `json:"name,omitempty"`
-}
-
 type queryRequest struct {
-	SourceID string        `json:"sourceId"`
-	Tenant   tenantRequest `json:"tenant"`
-	Query    string        `json:"query"`
-	Field    string        `json:"field,omitempty"`
+	SourceID string `json:"sourceId"`
+	Query    string `json:"query"`
+	Field    string `json:"field,omitempty"`
 }
 
 type sourceView struct {
-	ID      string          `json:"id"`
-	Name    string          `json:"name"`
-	Tenants []config.Tenant `json:"tenants"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 func New(cfg *config.Config, authenticator *auth.Authenticator, store *storage.Store, client *victoria.Client, logger *slog.Logger) http.Handler {
 	s := &Server{
 		cfg: cfg, auth: authenticator, store: store, vlogs: client, logger: logger,
-		gate:    newConcurrencyGate(cfg.Limits.MaxQueriesPerUser, cfg.Limits.MaxTailsPerUser),
+		gate:    newConcurrencyGate(cfg.Limits.MaxQueriesPerUser),
 		metrics: &metrics{},
 	}
 	mux := http.NewServeMux()
@@ -55,13 +47,16 @@ func New(cfg *config.Config, authenticator *auth.Authenticator, store *storage.S
 	mux.HandleFunc("GET /auth/logout", authenticator.Logout)
 	mux.Handle("GET /api/v1/session", s.withUser(http.HandlerFunc(s.handleSession)))
 	mux.Handle("POST /api/v1/account/password", s.withUser(http.HandlerFunc(s.handleChangePassword)))
-	mux.Handle("POST /api/v1/query", s.withUser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.handleStream(w, r, false) })))
-	mux.Handle("POST /api/v1/tail", s.withUser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.handleStream(w, r, true) })))
+	mux.Handle("POST /api/v1/query", s.withUser(http.HandlerFunc(s.handleStream)))
 	mux.Handle("POST /api/v1/fields", s.withUser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.handleMetadata(w, r, false) })))
 	mux.Handle("POST /api/v1/field-values", s.withUser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.handleMetadata(w, r, true) })))
 	mux.Handle("POST /api/v1/shares", s.withUser(http.HandlerFunc(s.handleCreateShare)))
 	mux.Handle("POST /api/v1/shares/open", s.withUser(http.HandlerFunc(s.handleOpenShare)))
-	mux.Handle("GET /api/v1/team-library", s.withUser(http.HandlerFunc(s.handleTeamLibrary)))
+	mux.Handle("GET /api/v1/star-library", s.withUser(http.HandlerFunc(s.handleStarLibrary)))
+	mux.Handle("GET /api/v1/team-library", s.withUser(http.HandlerFunc(s.handleStarLibrary)))
+	mux.Handle("POST /api/v1/personal-queries", s.withUser(http.HandlerFunc(s.handleCreatePersonalQuery)))
+	mux.Handle("POST /api/v1/personal-queries/{id}", s.withUser(http.HandlerFunc(s.handleUpdatePersonalQuery)))
+	mux.Handle("DELETE /api/v1/personal-queries/{id}", s.withUser(http.HandlerFunc(s.handleDeletePersonalQuery)))
 	mux.Handle("POST /api/v1/team-folders", s.withUser(http.HandlerFunc(s.handleCreateFolder)))
 	mux.Handle("POST /api/v1/team-queries", s.withUser(http.HandlerFunc(s.handleCreateTeamQuery)))
 	mux.Handle("POST /api/v1/team-queries/{id}", s.withUser(http.HandlerFunc(s.handleUpdateTeamQuery)))
@@ -110,17 +105,8 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 	sources := make([]sourceView, 0, len(s.cfg.Sources))
 	for _, source := range s.cfg.Sources {
-		if !hasAnyRole(user.Roles, source.Roles) {
-			continue
-		}
-		view := sourceView{ID: source.ID, Name: source.Name}
-		for _, tenant := range source.Tenants {
-			if len(tenant.Roles) == 0 || hasAnyRole(user.Roles, tenant.Roles) {
-				view.Tenants = append(view.Tenants, tenant)
-			}
-		}
-		if len(view.Tenants) > 0 {
-			sources = append(sources, view)
+		if hasAnyRole(user.Roles, source.Roles) {
+			sources = append(sources, sourceView{ID: source.ID, Name: source.Name})
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -132,23 +118,17 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 			"maxRows":        s.cfg.Limits.MaxRows,
 			"maxBytes":       s.cfg.Limits.MaxBytes,
 			"maxQueries":     s.cfg.Limits.MaxQueriesPerUser,
-			"maxTails":       s.cfg.Limits.MaxTailsPerUser,
 		},
 	})
 }
 
-func (s *Server) authorize(user auth.User, input queryRequest) (config.SourceConfig, config.Tenant, bool) {
+func (s *Server) authorize(user auth.User, input queryRequest) (config.SourceConfig, bool) {
 	for _, source := range s.cfg.Sources {
-		if source.ID != input.SourceID || !hasAnyRole(user.Roles, source.Roles) {
-			continue
-		}
-		for _, tenant := range source.Tenants {
-			if tenant.AccountID == input.Tenant.AccountID && tenant.ProjectID == input.Tenant.ProjectID && (len(tenant.Roles) == 0 || hasAnyRole(user.Roles, tenant.Roles)) {
-				return source, tenant, true
-			}
+		if source.ID == input.SourceID && hasAnyRole(user.Roles, source.Roles) {
+			return source, true
 		}
 	}
-	return config.SourceConfig{}, config.Tenant{}, false
+	return config.SourceConfig{}, false
 }
 
 func hasAnyRole(userRoles, allowed []string) bool {
@@ -170,8 +150,8 @@ func decodeQueryRequest(w http.ResponseWriter, r *http.Request) (queryRequest, b
 		return queryRequest{}, false
 	}
 	input.Query = strings.TrimSpace(input.Query)
-	if input.SourceID == "" || input.Tenant.AccountID == "" || input.Tenant.ProjectID == "" || input.Query == "" {
-		writeJSONError(w, http.StatusBadRequest, "sourceId, tenant, and query are required")
+	if input.SourceID == "" || input.Query == "" {
+		writeJSONError(w, http.StatusBadRequest, "sourceId and query are required")
 		return queryRequest{}, false
 	}
 	return input, true

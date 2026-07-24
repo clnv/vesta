@@ -1,6 +1,6 @@
 import type {
-  Directory, DirectoryUser, FieldValue, PermissionCatalog, Session, ShareAudience, SharePayload,
-  Team, TeamFolder, TeamLibrary, TeamQuery, StreamEvent, Tenant,
+  Directory, DirectoryUser, FieldValue, PermissionCatalog, PersonalQuery, Session, SharePayload,
+  StarLibrary, Team, TeamFolder, TeamQuery, StreamEvent,
   UpdateDirectoryUserInput,
 } from "../types";
 
@@ -55,19 +55,27 @@ async function putJSON<T>(path: string, body: unknown, csrfToken: string): Promi
   return response.json() as Promise<T>;
 }
 
-export async function createShare(payload: SharePayload, audience: ShareAudience, csrfToken: string): Promise<{ token: string; expiresAt: number }> {
-  return postJSON("/api/v1/shares", { payload, audience }, csrfToken);
+export async function createShare(payload: SharePayload, csrfToken: string): Promise<{ token: string; expiresAt: number }> {
+  return postJSON("/api/v1/shares", { payload }, csrfToken);
 }
 
 export async function openShare(token: string, csrfToken: string): Promise<{ payload: SharePayload; expiresAt: number }> {
   return postJSON("/api/v1/shares/open", { token }, csrfToken);
 }
 
-export async function getTeamLibrary(): Promise<TeamLibrary[]> {
-  const response = await fetch("/api/v1/team-library", { credentials: "same-origin" });
+export async function getStarLibrary(): Promise<StarLibrary> {
+  const response = await fetch("/api/v1/star-library", { credentials: "same-origin" });
   if (!response.ok) throw new APIError(await parseError(response), response.status);
-  const payload = await response.json() as { teams?: TeamLibrary[] };
-  return payload.teams ?? [];
+  const payload = await response.json() as Partial<StarLibrary>;
+  return { self: payload.self ?? [], teams: payload.teams ?? [] };
+}
+
+export async function createPersonalQuery(payload: SharePayload, csrfToken: string): Promise<PersonalQuery> {
+  return postJSON("/api/v1/personal-queries", { payload }, csrfToken);
+}
+
+export async function updatePersonalQuery(id: string, title: string, csrfToken: string): Promise<PersonalQuery> {
+  return postJSON(`/api/v1/personal-queries/${encodeURIComponent(id)}`, { title }, csrfToken);
 }
 
 export async function createTeamFolder(teamId: string, name: string, csrfToken: string): Promise<TeamFolder> {
@@ -97,7 +105,6 @@ export async function getPermissionCatalog(): Promise<PermissionCatalog> {
     sources: (catalog.sources ?? []).map((source) => ({
       ...source,
       roles: source.roles ?? [],
-      tenants: (source.tenants ?? []).map((tenant) => ({ ...tenant, roles: tenant.roles ?? [] })),
     })),
   };
 }
@@ -155,16 +162,15 @@ export async function changePassword(currentPassword: string, newPassword: strin
   if (!response.ok) throw new APIError(await parseError(response), response.status);
 }
 
-export interface QueryInput { sourceId: string; tenant: Tenant; query: string; field?: string }
+export interface QueryInput { sourceId: string; query: string; field?: string }
 
 export async function streamQuery(
-  path: "/api/v1/query" | "/api/v1/tail",
   input: QueryInput,
   csrfToken: string,
   signal: AbortSignal,
   onEvent: (event: StreamEvent) => void,
 ): Promise<void> {
-  const response = await fetch(path, {
+  const response = await fetch("/api/v1/query", {
     method: "POST",
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },

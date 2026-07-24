@@ -49,17 +49,9 @@ type permissionCatalog struct {
 }
 
 type permissionSource struct {
-	ID      string             `json:"id"`
-	Name    string             `json:"name"`
-	Roles   []string           `json:"roles"`
-	Tenants []permissionTenant `json:"tenants"`
-}
-
-type permissionTenant struct {
-	AccountID string   `json:"accountId"`
-	ProjectID string   `json:"projectId"`
-	Name      string   `json:"name"`
-	Roles     []string `json:"roles"`
+	ID    string   `json:"id"`
+	Name  string   `json:"name"`
+	Roles []string `json:"roles"`
 }
 
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
@@ -100,19 +92,9 @@ func (s *Server) handlePermissions(w http.ResponseWriter, _ *http.Request) {
 
 	sources := make([]permissionSource, 0, len(s.cfg.Sources))
 	for _, source := range s.cfg.Sources {
-		view := permissionSource{
+		sources = append(sources, permissionSource{
 			ID: source.ID, Name: source.Name, Roles: append([]string{}, source.Roles...),
-			Tenants: make([]permissionTenant, 0, len(source.Tenants)),
-		}
-		for _, tenant := range source.Tenants {
-			view.Tenants = append(view.Tenants, permissionTenant{
-				AccountID: tenant.AccountID,
-				ProjectID: tenant.ProjectID,
-				Name:      tenant.Name,
-				Roles:     append([]string{}, tenant.Roles...),
-			})
-		}
-		sources = append(sources, view)
+		})
 	}
 	writeJSON(w, http.StatusOK, permissionCatalog{Roles: roles, Sources: sources})
 }
@@ -260,11 +242,6 @@ func (s *Server) configuredRoleSet() map[string]struct{} {
 	for _, source := range s.cfg.Sources {
 		for _, role := range source.Roles {
 			roles[strings.TrimSpace(role)] = struct{}{}
-		}
-		for _, tenant := range source.Tenants {
-			for _, role := range tenant.Roles {
-				roles[strings.TrimSpace(role)] = struct{}{}
-			}
 		}
 	}
 	delete(roles, "")

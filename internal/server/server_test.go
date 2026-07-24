@@ -79,7 +79,8 @@ func newTestRuntime(t *testing.T, upstreamURL string, limits config.LimitsConfig
 		Limits:  limits,
 		Sources: []config.SourceConfig{{
 			ID: "prod", Name: "Production", URL: upstreamURL, Roles: []string{"reader"},
-			Tenants:      []config.Tenant{{AccountID: "12", ProjectID: "34", Name: "payments"}},
+			AccountID:    "12",
+			ProjectID:    "34",
 			HiddenFields: []string{"password*", "authorization"},
 		}},
 	}
@@ -94,9 +95,6 @@ func newTestRuntime(t *testing.T, upstreamURL string, limits config.LimitsConfig
 	}
 	if cfg.Limits.MaxQueriesPerUser == 0 {
 		cfg.Limits.MaxQueriesPerUser = 4
-	}
-	if cfg.Limits.MaxTailsPerUser == 0 {
-		cfg.Limits.MaxTailsPerUser = 2
 	}
 	if cfg.Limits.MaxLineBytes == 0 {
 		cfg.Limits.MaxLineBytes = 8 << 20
@@ -154,7 +152,6 @@ func (runtime *testRuntime) client(t *testing.T, email, password string) http.Ha
 func queryBody(query string) io.Reader {
 	value, _ := json.Marshal(map[string]any{
 		"sourceId": "prod",
-		"tenant":   map[string]string{"accountId": "12", "projectId": "34"},
 		"query":    query,
 	})
 	return bytes.NewReader(value)
@@ -204,7 +201,7 @@ func TestQueryForwardsOnlyQuerySemantics(t *testing.T) {
 		t.Fatalf("normal query form contains unexpected semantics: %v", capture.form)
 	}
 	if capture.headers.Get("AccountID") != "12" || capture.headers.Get("ProjectID") != "34" {
-		t.Fatal("tenant headers were not forwarded")
+		t.Fatal("source routing headers were not forwarded")
 	}
 
 	var events []streamEvent
@@ -351,8 +348,7 @@ func TestUpstreamErrorsAndHiddenFieldMetadata(t *testing.T) {
 		}
 
 		valueBody, _ := json.Marshal(map[string]any{
-			"sourceId": "prod", "tenant": map[string]string{"accountId": "12", "projectId": "34"},
-			"query": "_time:1h", "field": "password_hash",
+			"sourceId": "prod", "query": "_time:1h", "field": "password_hash",
 		})
 		req = httptest.NewRequest(http.MethodPost, "/api/v1/field-values", bytes.NewReader(valueBody))
 		req.Header.Set("X-CSRF-Token", "vesta-development-csrf")
@@ -412,12 +408,12 @@ func TestSessionReturnsOnlyAuthorizedContexts(t *testing.T) {
 	if strings.Contains(recorder.Body.String(), upstream.URL) {
 		t.Fatal("VictoriaLogs URL leaked to the browser")
 	}
-	if !strings.Contains(recorder.Body.String(), `"id":"prod"`) || !strings.Contains(recorder.Body.String(), `"accountId":"12"`) {
+	if !strings.Contains(recorder.Body.String(), `"id":"prod"`) || strings.Contains(recorder.Body.String(), `"accountId"`) {
 		t.Fatalf("missing authorized source: %s", recorder.Body.String())
 	}
 }
 
-func TestPrivateSharesRequireLoginAndEnforceUserOrTeamAudience(t *testing.T) {
+func TestSharesRequireLoginAndPreserveAuthorization(t *testing.T) {
 	upstream := httptest.NewServer(http.NotFoundHandler())
 	defer upstream.Close()
 	runtime := newTestRuntime(t, upstream.URL, config.LimitsConfig{})
@@ -449,14 +445,16 @@ func TestPrivateSharesRequireLoginAndEnforceUserOrTeamAudience(t *testing.T) {
 
 	makeShare := func(client http.Handler, audience map[string]string) string {
 		t.Helper()
-		body, err := json.Marshal(map[string]any{
+		requestBody := map[string]any{
 			"payload": map[string]any{
 				"query": "_time:1h error", "sourceId": "prod",
-				"tenant": map[string]string{"accountId": "12", "projectId": "34", "name": "payments"},
-				"title":  "Errors", "resultMode": "chart",
+				"title": "Errors", "resultMode": "chart",
 			},
-			"audience": audience,
-		})
+		}
+		if audience != nil {
+			requestBody["audience"] = audience
+		}
+		body, err := json.Marshal(requestBody)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -483,6 +481,14 @@ func TestPrivateSharesRequireLoginAndEnforceUserOrTeamAudience(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		client.ServeHTTP(recorder, req)
 		return recorder
+	}
+
+	systemToken := makeShare(creator, nil)
+	if recorder := openShare(outsider, systemToken); recorder.Code != http.StatusOK {
+		t.Fatalf("authorized system user could not open share: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := openShare(restricted, systemToken); recorder.Code != http.StatusForbidden {
+		t.Fatalf("system share bypassed source authorization: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 
 	userToken := makeShare(creator, map[string]string{"type": "user", "value": "alice@example.test"})
@@ -522,7 +528,7 @@ func TestPrivateShareRejectsTeamOutsideCreatorMembership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"payload":{"query":"_time:1h","sourceId":"prod","tenant":{"accountId":"12","projectId":"34"},"title":"Errors","resultMode":"table"},"audience":{"type":"team","value":"` + otherTeam.ID + `"}}`
+	body := `{"payload":{"query":"_time:1h","sourceId":"prod","title":"Errors","resultMode":"table"},"audience":{"type":"team","value":"` + otherTeam.ID + `"}}`
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/shares", strings.NewReader(body))
 	request.Header.Set("X-CSRF-Token", "vesta-development-csrf")
 	recorder := httptest.NewRecorder()
@@ -577,7 +583,6 @@ func TestLocalDirectoryAndFolderedTeamQueries(t *testing.T) {
 	post(memberClient, "/api/v1/team-queries", `{
 		"teamId":"`+team.ID+`","folderId":"`+folder.ID+`",
 		"payload":{"query":"_time:1h error","sourceId":"prod",
-		"tenant":{"accountId":"12","projectId":"34","name":"payments"},
 		"title":"","resultMode":"table"}
 	}`, http.StatusBadRequest)
 
@@ -585,7 +590,6 @@ func TestLocalDirectoryAndFolderedTeamQueries(t *testing.T) {
 	if err := json.Unmarshal(post(memberClient, "/api/v1/team-queries", `{
 		"teamId":"`+team.ID+`","folderId":"`+folder.ID+`",
 		"payload":{"query":"_time:1h error","sourceId":"prod",
-		"tenant":{"accountId":"12","projectId":"34","name":"payments"},
 		"title":"Recent errors","resultMode":"table"}
 	}`, http.StatusCreated), &item); err != nil {
 		t.Fatal(err)
@@ -606,20 +610,39 @@ func TestLocalDirectoryAndFolderedTeamQueries(t *testing.T) {
 	}
 	post(memberClient, "/api/v1/team-queries/"+item.ID, `{"title":" ","folderId":""}`, http.StatusBadRequest)
 
+	var personal storage.PersonalQuery
+	if err := json.Unmarshal(post(memberClient, "/api/v1/personal-queries", `{
+		"payload":{"query":"_time:30m warning","sourceId":"prod",
+		"title":"Private investigation","resultMode":"table"}
+	}`, http.StatusCreated), &personal); err != nil {
+		t.Fatal(err)
+	}
+
 	request = httptest.NewRequest(http.MethodGet, "/api/v1/team-library", nil)
 	recorder = httptest.NewRecorder()
 	memberClient.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"name":"Archive"`) ||
-		!strings.Contains(recorder.Body.String(), `"title":"Priority errors"`) {
+		!strings.Contains(recorder.Body.String(), `"title":"Priority errors"`) ||
+		!strings.Contains(recorder.Body.String(), `"title":"Private investigation"`) {
 		t.Fatalf("unexpected team library: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/star-library", nil)
+	recorder = httptest.NewRecorder()
+	admin.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || strings.Contains(recorder.Body.String(), `"title":"Private investigation"`) {
+		t.Fatalf("personal star was visible to another user: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	post(admin, "/api/v1/personal-queries/"+personal.ID, `{"title":"Admin rename"}`, http.StatusNotFound)
+	post(memberClient, "/api/v1/personal-queries/"+personal.ID, `{"title":"Private renamed"}`, http.StatusOK)
 }
 
 func TestAdminAccessManagement(t *testing.T) {
 	runtime := newTestRuntime(t, "http://upstream-secret.example.test", config.LimitsConfig{})
-	runtime.cfg.Sources[0].Tenants[0].Roles = []string{"tenant-reader"}
-	runtime.cfg.Sources[0].Tenants = append(runtime.cfg.Sources[0].Tenants, config.Tenant{
-		AccountID: "56", ProjectID: "78", Name: "shared",
+	runtime.cfg.Sources = append(runtime.cfg.Sources, config.SourceConfig{
+		ID: "restricted", Name: "Restricted", URL: "http://upstream-secret.example.test",
+		Roles: []string{"source-reader"}, AccountID: "56", ProjectID: "78",
 	})
 	admin := runtime.client(t, "tester@example.test", "correct-horse-battery")
 
@@ -642,9 +665,8 @@ func TestAdminAccessManagement(t *testing.T) {
 	if err := json.Unmarshal(permissionsBody, &catalog); err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog.Roles) != 2 || catalog.Roles[0] != "reader" || catalog.Roles[1] != "tenant-reader" ||
-		len(catalog.Sources) != 1 || len(catalog.Sources[0].Tenants) != 2 ||
-		catalog.Sources[0].Tenants[1].Roles == nil {
+	if len(catalog.Roles) != 2 || catalog.Roles[0] != "reader" || catalog.Roles[1] != "source-reader" ||
+		len(catalog.Sources) != 2 || catalog.Sources[1].Roles == nil {
 		t.Fatalf("unexpected permission catalog: %#v", catalog)
 	}
 	permissionsJSON := string(permissionsBody)
@@ -675,7 +697,7 @@ func TestAdminAccessManagement(t *testing.T) {
 	platformID := adminUser.Teams[0].ID
 	var updated storage.User
 	updateBody := `{
-		"email":"renamed@example.test","name":"Renamed member","roles":["reader","tenant-reader"],
+		"email":"renamed@example.test","name":"Renamed member","roles":["reader","source-reader"],
 		"isAdmin":false,"disabled":false,"teamIds":["` + platformID + `"]
 	}`
 	if err := json.Unmarshal(do(admin, http.MethodPut, "/api/v1/admin/users/"+member.ID, updateBody, http.StatusOK), &updated); err != nil {

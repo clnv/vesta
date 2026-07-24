@@ -21,19 +21,36 @@ type createTeamQueryRequest struct {
 	Payload  sharedQuery `json:"payload"`
 }
 
+type createPersonalQueryRequest struct {
+	Payload sharedQuery `json:"payload"`
+}
+
+type updatePersonalQueryRequest struct {
+	Title string `json:"title"`
+}
+
 type updateTeamQueryRequest struct {
 	FolderID string `json:"folderId"`
 	Title    string `json:"title"`
 }
 
-func (s *Server) handleTeamLibrary(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleStarLibrary(w http.ResponseWriter, r *http.Request) {
 	user := auth.MustUser(r.Context())
+	personal, err := s.store.ListPersonalQueries(r.Context(), user.Subject)
+	if err != nil {
+		s.logger.Error("list personal query library", "subject", user.Subject, "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "personal queries could not be loaded")
+		return
+	}
 	libraries, err := s.store.ListTeamLibraries(r.Context(), user.Subject)
 	if err != nil {
 		s.logger.Error("list team query library", "subject", user.Subject, "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "team queries could not be loaded")
 		return
 	}
+	personal = slices.DeleteFunc(personal, func(item storage.PersonalQuery) bool {
+		return !s.personalQueryAuthorized(user, item)
+	})
 	for libraryIndex := range libraries {
 		libraries[libraryIndex].Queries = slices.DeleteFunc(libraries[libraryIndex].Queries, func(item storage.TeamQuery) bool {
 			return !s.teamQueryAuthorized(user, item)
@@ -45,7 +62,73 @@ func (s *Server) handleTeamLibrary(w http.ResponseWriter, r *http.Request) {
 			)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"teams": libraries})
+	writeJSON(w, http.StatusOK, map[string]any{"self": personal, "teams": libraries})
+}
+
+func (s *Server) handleCreatePersonalQuery(w http.ResponseWriter, r *http.Request) {
+	var input createPersonalQueryRequest
+	if !decodeAPIJSON(w, r, &input) {
+		return
+	}
+	if strings.TrimSpace(input.Payload.Title) == "" {
+		writeJSONError(w, http.StatusBadRequest, "star name is required")
+		return
+	}
+	if message := validateSharedQuery(input.Payload); message != "" {
+		writeJSONError(w, http.StatusBadRequest, message)
+		return
+	}
+	user := auth.MustUser(r.Context())
+	source, allowed := s.authorize(user, queryRequest{
+		SourceID: input.Payload.SourceID,
+		Query:    input.Payload.Query,
+	})
+	if !allowed {
+		writeJSONError(w, http.StatusForbidden, "you cannot save this source")
+		return
+	}
+	item, err := s.store.CreatePersonalQuery(r.Context(), storage.CreatePersonalQueryInput{
+		UserID: user.Subject, Title: input.Payload.Title, Query: input.Payload.Query, SourceID: source.ID,
+		ResultMode: input.Payload.ResultMode,
+	})
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *Server) handleUpdatePersonalQuery(w http.ResponseWriter, r *http.Request) {
+	var input updatePersonalQueryRequest
+	if !decodeAPIJSON(w, r, &input) {
+		return
+	}
+	user := auth.MustUser(r.Context())
+	item, err := s.store.UpdatePersonalQuery(r.Context(), storage.UpdatePersonalQueryInput{
+		ID: r.PathValue("id"), UserID: user.Subject, Title: input.Title,
+	})
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, item)
+	case errors.Is(err, storage.ErrNotFound):
+		writeJSONError(w, http.StatusNotFound, "personal star was not found")
+	default:
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+	}
+}
+
+func (s *Server) handleDeletePersonalQuery(w http.ResponseWriter, r *http.Request) {
+	user := auth.MustUser(r.Context())
+	err := s.store.DeletePersonalQuery(r.Context(), r.PathValue("id"), user.Subject)
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, storage.ErrNotFound):
+		writeJSONError(w, http.StatusNotFound, "personal star was not found")
+	default:
+		s.logger.Error("delete personal query", "subject", user.Subject, "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "personal star could not be deleted")
+	}
 }
 
 func (s *Server) handleCreateFolder(w http.ResponseWriter, r *http.Request) {
@@ -81,19 +164,17 @@ func (s *Server) handleCreateTeamQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := auth.MustUser(r.Context())
-	source, tenant, allowed := s.authorize(user, queryRequest{
+	source, allowed := s.authorize(user, queryRequest{
 		SourceID: input.Payload.SourceID,
-		Tenant:   input.Payload.Tenant,
 		Query:    input.Payload.Query,
 	})
 	if !allowed {
-		writeJSONError(w, http.StatusForbidden, "you cannot save this source or tenant")
+		writeJSONError(w, http.StatusForbidden, "you cannot save this source")
 		return
 	}
 	item, err := s.store.CreateTeamQuery(r.Context(), storage.CreateTeamQueryInput{
 		TeamID: input.TeamID, FolderID: input.FolderID,
 		Title: input.Payload.Title, Query: input.Payload.Query, SourceID: source.ID,
-		TenantAccountID: tenant.AccountID, TenantProjectID: tenant.ProjectID, TenantName: tenant.Name,
 		ResultMode: input.Payload.ResultMode, CreatedBy: user.Subject,
 	})
 	switch {
@@ -141,14 +222,17 @@ func (s *Server) handleDeleteTeamQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) teamQueryAuthorized(user auth.User, item storage.TeamQuery) bool {
-	_, _, allowed := s.authorize(user, queryRequest{
+	_, allowed := s.authorize(user, queryRequest{
 		SourceID: item.SourceID,
-		Tenant: tenantRequest{
-			AccountID: item.TenantAccountID,
-			ProjectID: item.TenantProjectID,
-			Name:      item.TenantName,
-		},
-		Query: strings.TrimSpace(item.Query),
+		Query:    strings.TrimSpace(item.Query),
+	})
+	return allowed
+}
+
+func (s *Server) personalQueryAuthorized(user auth.User, item storage.PersonalQuery) bool {
+	_, allowed := s.authorize(user, queryRequest{
+		SourceID: item.SourceID,
+		Query:    strings.TrimSpace(item.Query),
 	})
 	return allowed
 }

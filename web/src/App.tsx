@@ -1,8 +1,8 @@
 import {
   Braces, ChartNoAxesCombined, ChevronDown, CircleStop, Copy, Download, FileJson, History, KeyRound, LogOut,
-  Moon, Play, Radio, Share2, Star, Sun, Table2, TerminalSquare, Users, X,
+  LockKeyhole, Moon, Play, Share2, Star, Sun, Table2, Users, X,
 } from "lucide-react";
-import type { FormEvent } from "react";
+import type { CSSProperties, FormEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AccessManagementPage } from "./components/AccessManagementPage";
 import { FolderDialog } from "./components/FolderDialog";
@@ -12,25 +12,45 @@ import { ResultViewer } from "./components/ResultViewer";
 import { Sidebar } from "./components/Sidebar";
 import { TabBar } from "./components/TabBar";
 import {
-  APIError, createShare, createTeamFolder, createTeamQuery, getSession,
-  getTeamLibrary, login, openShare, streamQuery, updateTeamQuery,
+  APIError, createPersonalQuery, createShare, createTeamFolder, createTeamQuery, getSession,
+  getStarLibrary, login, openShare, streamQuery, updatePersonalQuery, updateTeamQuery,
 } from "./lib/api";
 import { blobToDataURL, chartElementToPNG } from "./lib/chartExport";
-import { clipboardRows, formatRows, shareBundle } from "./lib/format";
+import { formatRows, shareBundle } from "./lib/format";
 import { columnsFromQuery, DEFAULT_QUERY, hasTimeFilter, renderDirectiveFromQuery } from "./lib/logsql";
-import { appendToRing } from "./lib/ring";
 import { clearHistory as clearStoredHistory, loadWorkspace, saveWorkspace } from "./lib/storage";
-import { privateShareURL, sharedTabId, shareTokenFromHash } from "./lib/share";
+import { sharedTabId, shareTokenFromHash, shareURL } from "./lib/share";
 import { tabFromTeamStar } from "./lib/teamStars";
 import type {
-  ExplorerTab, HistoryEntry, PersistedTab, RunStatus, Session, ShareAudience,
-  SharePayload, StreamEvent, TeamLibrary, TeamQuery, Tenant,
+  ExplorerTab, HistoryEntry, PersonalQuery, PersistedTab, Session, SharePayload,
+  StarQuery, StreamEvent, TeamLibrary, TeamQuery,
 } from "./types";
 
 type Theme = "light" | "dark";
 type AppRoute = "explorer" | "admin-access";
+type ShareParts = { link: boolean; query: boolean; results: boolean };
 type SessionState = { kind: "loading" } | { kind: "signed-out" } | { kind: "ready"; session: Session } | { kind: "error"; message: string };
 const EMPTY_EDITOR_FIELDS: string[] = [];
+const DEFAULT_SHARE_PARTS: ShareParts = { link: true, query: true, results: false };
+const EDITOR_PANE_STORAGE_KEY = "vesta-editor-pane-percent";
+const DEFAULT_EDITOR_PANE_PERCENT = 36;
+const MIN_EDITOR_PANE_PERCENT = 20;
+const MAX_EDITOR_PANE_PERCENT = 80;
+
+function clampEditorPanePercent(value: number): number {
+  return Math.min(MAX_EDITOR_PANE_PERCENT, Math.max(MIN_EDITOR_PANE_PERCENT, value));
+}
+
+function savedEditorPanePercent(): number {
+  try {
+    const saved = localStorage.getItem(EDITOR_PANE_STORAGE_KEY);
+    if (saved === null) return DEFAULT_EDITOR_PANE_PERCENT;
+    const value = Number(saved);
+    return Number.isFinite(value) ? clampEditorPanePercent(value) : DEFAULT_EDITOR_PANE_PERCENT;
+  } catch {
+    return DEFAULT_EDITOR_PANE_PERCENT;
+  }
+}
 
 function currentRoute(): AppRoute {
   return window.location.pathname === "/admin/access" ? "admin-access" : "explorer";
@@ -38,7 +58,28 @@ function currentRoute(): AppRoute {
 
 function runtimeTab(tab: PersistedTab): ExplorerTab {
   const resultMode = tab.resultMode === "json" || tab.resultMode === "chart" ? tab.resultMode : "table";
-  return { ...tab, resultMode, status: "idle", rows: [], droppedRows: 0 };
+  return {
+    id: tab.id,
+    title: tab.title,
+    sourceId: tab.sourceId,
+    query: tab.query,
+    lastExecutedQuery: tab.lastExecutedQuery,
+    resultMode,
+    status: "idle",
+    rows: [],
+    protected: tab.protected,
+  };
+}
+
+function runtimeHistory(entry: HistoryEntry): HistoryEntry {
+  return {
+    id: entry.id,
+    query: entry.query,
+    sourceId: entry.sourceId,
+    executedAt: entry.executedAt,
+    status: entry.status,
+    elapsedMs: entry.elapsedMs,
+  };
 }
 
 function newTab(session: Session, title = "New query"): ExplorerTab {
@@ -47,19 +88,17 @@ function newTab(session: Session, title = "New query"): ExplorerTab {
     id: crypto.randomUUID(),
     title,
     sourceId: source?.id ?? "",
-    tenant: source?.tenants[0] ?? { accountId: "", projectId: "", name: "No tenant" },
     query: DEFAULT_QUERY,
     lastExecutedQuery: "",
     resultMode: "table",
     status: "idle",
     rows: [],
-    droppedRows: 0,
     contextError: source ? undefined : "Your account has no authorized VictoriaLogs sources.",
   };
 }
 
-function isContextAllowed(session: Session, sourceId: string, tenant: Tenant): boolean {
-  return session.sources.some((source) => source.id === sourceId && source.tenants.some((candidate) => candidate.accountId === tenant.accountId && candidate.projectId === tenant.projectId));
+function isContextAllowed(session: Session, sourceId: string): boolean {
+  return session.sources.some((source) => source.id === sourceId);
 }
 
 function persistenceShape(tab: ExplorerTab): PersistedTab {
@@ -67,7 +106,6 @@ function persistenceShape(tab: ExplorerTab): PersistedTab {
     id: tab.id,
     title: tab.title,
     sourceId: tab.sourceId,
-    tenant: tab.tenant,
     query: tab.query,
     lastExecutedQuery: tab.lastExecutedQuery,
     resultMode: tab.resultMode,
@@ -89,12 +127,13 @@ export default function App() {
   const [workspaceReady, setWorkspaceReady] = useState(false);
   const [sidebarMode, setSidebarMode] = useState<"history" | "stars">("history");
   const [shareOpen, setShareOpen] = useState(false);
-  const [shareAudience, setShareAudience] = useState<ShareAudience["type"]>("user");
-  const [shareTarget, setShareTarget] = useState("");
+  const [shareParts, setShareParts] = useState<ShareParts>(DEFAULT_SHARE_PARTS);
   const [starOpen, setStarOpen] = useState(false);
+  const [starCollection, setStarCollection] = useState<"private" | "team">("private");
   const [starName, setStarName] = useState("");
   const [starTeam, setStarTeam] = useState("");
   const [starFolder, setStarFolder] = useState("");
+  const [personalQueries, setPersonalQueries] = useState<PersonalQuery[]>([]);
   const [teamLibraries, setTeamLibraries] = useState<TeamLibrary[]>([]);
   const [folderDialogTeam, setFolderDialogTeam] = useState("");
   const [folderCreating, setFolderCreating] = useState(false);
@@ -104,9 +143,11 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [route, setRoute] = useState<AppRoute>(currentRoute);
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("vesta-theme") as Theme) || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
+  const [editorPanePercent, setEditorPanePercent] = useState(savedEditorPanePercent);
   const editorRef = useRef<QueryEditorHandle>(null);
   const folderTriggerRef = useRef<HTMLElement | null>(null);
   const controllers = useRef(new Map<string, AbortController>());
+  const paneResizeRef = useRef<{ pointerId: number; startY: number; startEditorHeight: number; totalHeight: number } | null>(null);
 
   const session = sessionState.kind === "ready" ? sessionState.session : null;
   const activeTab = tabs.find((tab) => tab.id === activeId);
@@ -119,6 +160,14 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("vesta-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem(EDITOR_PANE_STORAGE_KEY, String(editorPanePercent));
+  }, [editorPanePercent]);
+
+  useEffect(() => () => {
+    document.body.classList.remove("resizing-panes");
+  }, []);
 
   useEffect(() => {
     const handlePopState = () => setRoute(currentRoute());
@@ -152,13 +201,13 @@ export default function App() {
     void (async () => {
       try {
         const currentSession = await getSession();
-        const libraries = await getTeamLibrary();
+        const library = await getStarLibrary();
         const restored = await loadWorkspace();
         let restoredTabs = restored.tabs.map((tab) => {
           const runtime = runtimeTab(tab);
-          return isContextAllowed(currentSession, runtime.sourceId, runtime.tenant)
+          return isContextAllowed(currentSession, runtime.sourceId)
             ? runtime
-            : { ...runtime, contextError: "This saved source or tenant is no longer authorized." };
+            : { ...runtime, contextError: "This saved source is no longer authorized." };
         });
         let shared: SharePayload | null = null;
         const privateToken = shareTokenFromHash(window.location.hash);
@@ -166,7 +215,7 @@ export default function App() {
           try {
             shared = (await openShare(privateToken, currentSession.csrfToken)).payload;
           } catch (error) {
-            setToast(error instanceof Error ? error.message : "This private share could not be opened");
+            setToast(error instanceof Error ? error.message : "This shared query could not be opened");
           }
         }
         if (shared) {
@@ -175,15 +224,13 @@ export default function App() {
             id: sharedId,
             title: shared.title || "Shared query",
             sourceId: shared.sourceId,
-            tenant: shared.tenant,
             query: shared.query,
             lastExecutedQuery: "",
             resultMode: shared.resultMode,
             status: "idle",
             rows: [],
-            droppedRows: 0,
             protected: true,
-            contextError: isContextAllowed(currentSession, shared.sourceId, shared.tenant) ? undefined : "You are not authorized for the source or tenant in this shared link.",
+            contextError: isContextAllowed(currentSession, shared.sourceId) ? undefined : "You are not authorized for the source in this shared link.",
           };
           restoredTabs = [...restoredTabs.filter((tab) => tab.id !== sharedId), sharedTab];
           setActiveId(sharedId);
@@ -196,9 +243,12 @@ export default function App() {
           setActiveId(initial.id);
         }
         setTabs(restoredTabs);
-        setHistoryEntries(restored.history.filter((entry) => isContextAllowed(currentSession, entry.sourceId, entry.tenant)).slice(0, 100));
-        setTeamLibraries(libraries);
-        setShareTarget(currentSession.user.email);
+        setHistoryEntries(restored.history
+          .filter((entry) => isContextAllowed(currentSession, entry.sourceId))
+          .map(runtimeHistory)
+          .slice(0, 100));
+        setPersonalQueries(library.self);
+        setTeamLibraries(library.teams);
         setStarTeam(currentSession.user.teams?.[0]?.id ?? "");
         setSessionState({ kind: "ready", session: currentSession });
         setWorkspaceReady(true);
@@ -228,11 +278,15 @@ export default function App() {
     setTabs((current) => current.map((tab) => tab.id === id ? { ...tab, ...(typeof update === "function" ? update(tab) : update) } : tab));
   }, []);
 
-  const runQuery = useCallback(async (tabId: string, explicitQuery: string, tail: boolean) => {
+  const runQuery = useCallback(async (tabId: string, explicitQuery: string) => {
     if (!session) return;
     const tab = tabs.find((candidate) => candidate.id === tabId);
     const query = explicitQuery.trim();
-    if (!tab || !query) return;
+    if (!tab) return;
+    if (!query) {
+      updateTab(tabId, { status: "error", error: "Place the cursor inside a query or select one before running." });
+      return;
+    }
     const visualization = renderDirectiveFromQuery(query);
     const executableQuery = visualization?.executableQuery || query;
     if (tab.contextError) {
@@ -248,13 +302,12 @@ export default function App() {
     const controller = new AbortController();
     controllers.current.set(tabId, controller);
     const historyId = crypto.randomUUID();
-    const initialStatus: RunStatus = tail ? "tailing" : "running";
-    setHistoryEntries((current) => [{ id: historyId, query, sourceId: tab.sourceId, tenant: tab.tenant, executedAt: Date.now(), status: initialStatus }, ...current].slice(0, 100));
+    const historyEntry: HistoryEntry = { id: historyId, query, sourceId: tab.sourceId, executedAt: Date.now(), status: "running" };
+    setHistoryEntries((current) => [historyEntry, ...current].slice(0, 100));
     updateTab(tabId, {
-      status: tail ? "tailing" : "running",
+      status: "running",
       lastExecutedQuery: query,
       rows: [],
-      droppedRows: 0,
       error: undefined,
       warning: undefined,
       stats: undefined,
@@ -269,15 +322,11 @@ export default function App() {
       if (pendingRows.length === 0 || controllers.current.get(tabId) !== controller) return;
       const chunk = pendingRows;
       pendingRows = [];
-      updateTab(tabId, (current) => {
-        if (!tail) return { rows: [...current.rows, ...chunk] };
-        const next = appendToRing(current.rows, chunk, 10_000);
-        return { rows: next.rows, droppedRows: current.droppedRows + next.dropped };
-      });
+      updateTab(tabId, (current) => ({ rows: [...current.rows, ...chunk] }));
     };
     const flushTimer = window.setInterval(flushRows, 80);
     try {
-      await streamQuery(tail ? "/api/v1/tail" : "/api/v1/query", { sourceId: tab.sourceId, tenant: tab.tenant, query: executableQuery }, session.csrfToken, controller.signal, (event: StreamEvent) => {
+      await streamQuery({ sourceId: tab.sourceId, query: executableQuery }, session.csrfToken, controller.signal, (event: StreamEvent) => {
         if (controllers.current.get(tabId) !== controller) return;
         if (event.type === "meta") updateTab(tabId, { warning: event.warning || undefined, stats: { requestId: event.requestId, rows: 0, bytes: 0, elapsedMs: 0 } });
         if (event.type === "row" && event.row) pendingRows.push(event.row);
@@ -315,10 +364,10 @@ export default function App() {
     }
   }, [session, tabs, updateTab]);
 
-  const executeActive = useCallback((tail = false, explicit?: string) => {
+  const executeActive = useCallback((explicit?: string) => {
     if (!activeTab) return;
     const query = explicit ?? editorRef.current?.executableQuery() ?? activeTab.query;
-    void runQuery(activeTab.id, query, tail);
+    void runQuery(activeTab.id, query);
   }, [activeTab, runQuery]);
 
   const cancel = useCallback((id: string) => {
@@ -352,7 +401,7 @@ export default function App() {
   const duplicateTab = (id: string) => {
     const source = tabs.find((tab) => tab.id === id);
     if (!source) return;
-    const duplicate: ExplorerTab = { ...source, id: crypto.randomUUID(), title: `${source.title} copy`, status: "idle", rows: [], droppedRows: 0, error: undefined, stats: undefined, protected: false };
+    const duplicate: ExplorerTab = { ...source, id: crypto.randomUUID(), title: `${source.title} copy`, status: "idle", rows: [], error: undefined, stats: undefined, protected: false };
     setTabs((current) => [...current, duplicate]);
     setActiveId(duplicate.id);
   };
@@ -361,14 +410,7 @@ export default function App() {
     if (!session || !activeTab) return;
     const source = session.sources.find((candidate) => candidate.id === sourceId);
     if (!source) return;
-    updateTab(activeTab.id, { sourceId, tenant: source.tenants[0], contextError: undefined, rows: [], status: "idle" });
-  };
-
-  const setTenant = (key: string) => {
-    if (!session || !activeTab) return;
-    const source = session.sources.find((candidate) => candidate.id === activeTab.sourceId);
-    const tenant = source?.tenants.find((candidate) => `${candidate.accountId}:${candidate.projectId}` === key);
-    if (tenant) updateTab(activeTab.id, { tenant, contextError: undefined, rows: [], status: "idle" });
+    updateTab(activeTab.id, { sourceId, contextError: undefined, rows: [], status: "idle" });
   };
 
   const copyText = async (text: string, message: string) => {
@@ -423,101 +465,73 @@ export default function App() {
     }
   };
 
-  const copyChartImage = async (image: Blob, fallbackText: string) => {
-    try {
-      if (typeof ClipboardItem === "undefined" || typeof navigator.clipboard.write !== "function") {
-        await navigator.clipboard.writeText(fallbackText);
-        setToast("Chart source data copied; image clipboard is unavailable.");
-        return;
-      }
-      await navigator.clipboard.write([new ClipboardItem({
-        "image/png": image,
-        "text/plain": new Blob([fallbackText], { type: "text/plain" }),
-      })]);
-      setToast("Chart image copied");
-    } catch {
-      try {
-        await navigator.clipboard.writeText(fallbackText);
-        setToast("Chart source data copied; image clipboard was denied.");
-      } catch {
-        setToast("Clipboard access was denied by the browser.");
-      }
-    }
-  };
-
-  const copyQuery = () => {
-    if (!activeTab) return;
-    void copyText(editorRef.current?.executableQuery() ?? activeTab.query, "Query copied");
-    setShareOpen(false);
-  };
-
-  const createProtectedLink = async (query: string): Promise<string | null> => {
+  const createSystemShareLink = async (query: string): Promise<string | null> => {
     if (!activeTab || !session) return null;
-    const teams = session.user.teams ?? [];
-    const target = shareAudience === "team" ? shareTarget || teams[0]?.id || "" : shareTarget.trim() || session.user.email;
-    if (!target) {
-      setToast(shareAudience === "team" ? "Choose one of your teams first." : "Enter a user email or subject.");
-      return null;
-    }
     const payload: SharePayload = {
       query,
       sourceId: activeTab.sourceId,
-      tenant: activeTab.tenant,
       title: activeTab.title,
       resultMode: activeTab.resultMode,
     };
     try {
-      const result = await createShare(payload, { type: shareAudience, value: target }, session.csrfToken);
-      return privateShareURL(result.token);
+      const result = await createShare(payload, session.csrfToken);
+      return shareURL(result.token);
     } catch (error) {
-      setToast(error instanceof Error ? error.message : "Private link could not be created");
+      setToast(error instanceof Error ? error.message : "Share link could not be created");
       return null;
     }
   };
 
-  const copyLink = async () => {
-    if (!activeTab) return;
-    const link = await createProtectedLink(editorRef.current?.executableQuery() ?? activeTab.query);
-    if (link) await copyText(link, `Private link for ${shareAudience === "team" ? "team" : "user"} copied`);
+  const toggleSharePart = (part: keyof ShareParts) => {
+    if (part === "results" && activeTab?.rows.length === 0) return;
+    setShareParts((current) => ({ ...current, [part]: !current[part] }));
+  };
+
+  const copySelectedShare = async () => {
+    if (!activeTab || !session || !Object.values(shareParts).some(Boolean)) return;
+    if (shareParts.results && activeTab.rows.length === 0) {
+      setToast("Run the query before including results.");
+      return;
+    }
+    const editorQuery = editorRef.current?.executableQuery() ?? activeTab.query;
+    const query = shareParts.results && activeTab.lastExecutedQuery ? activeTab.lastExecutedQuery : editorQuery;
+    let link = "";
+    if (shareParts.link) {
+      const createdLink = await createSystemShareLink(query);
+      if (!createdLink) return;
+      link = createdLink;
+    }
+    const chartImage = shareParts.results && activeTab.resultMode === "chart" ? await renderedChartPNG() : null;
+    const bundle = shareBundle({
+      query,
+      link,
+      rows: activeTab.rows,
+      mode: activeTab.resultMode,
+      chartImageDataURL: chartImage ? await blobToDataURL(chartImage) : undefined,
+      include: shareParts,
+    });
+    const labels = [
+      shareParts.link ? "Link" : "",
+      shareParts.query ? "query" : "",
+      shareParts.results ? (chartImage ? "chart" : bundle.truncated ? "result excerpt" : "results") : "",
+    ].filter(Boolean);
+    await copyRichText(
+      bundle.text,
+      bundle.html,
+      `${labels.join(", ")} copied`,
+      chartImage ?? undefined,
+    );
     setShareOpen(false);
   };
 
-  const copyQueryLinkAndResults = async () => {
-    if (!activeTab || !session || activeTab.rows.length === 0) return;
-    const query = activeTab.lastExecutedQuery || activeTab.query;
-    const link = await createProtectedLink(query);
-    if (link) {
-      const chartImage = activeTab.resultMode === "chart" ? await renderedChartPNG() : null;
-      const bundle = shareBundle({
-        query,
-        link,
-        rows: activeTab.rows,
-        mode: activeTab.resultMode,
-        chartImageDataURL: chartImage ? await blobToDataURL(chartImage) : undefined,
-      });
-      await copyRichText(
-        bundle.text,
-        bundle.html,
-        chartImage
-          ? "Rich query, private link, and chart image copied"
-          : bundle.truncated ? "Rich query, link, and result excerpt copied" : "Rich query, link, and results copied",
-        chartImage ?? undefined,
-      );
+  const openShareMenu = () => {
+    const opening = !shareOpen;
+    setShareOpen(opening);
+    if (opening) {
+      setShareParts(DEFAULT_SHARE_PARTS);
     }
-    setShareOpen(false);
-  };
-
-  const copyResults = async () => {
-    if (!activeTab || activeTab.rows.length === 0) return;
-    const result = clipboardRows(activeTab.rows, activeTab.resultMode, columnsFromQuery(activeTab.lastExecutedQuery || activeTab.query));
-    if (activeTab.resultMode === "chart") {
-      const chartImage = await renderedChartPNG();
-      if (chartImage) await copyChartImage(chartImage, result.text);
-      else await copyText(result.text, "Chart source data copied");
-    } else {
-      await copyText(result.text, result.truncated ? "Result excerpt copied (5 MiB clipboard limit)" : "Results copied");
-    }
-    setShareOpen(false);
+    setStarOpen(false);
+    setExportOpen(false);
   };
 
   const download = (format: "csv" | "ndjson") => {
@@ -533,8 +547,8 @@ export default function App() {
   };
 
   const recall = (entry: HistoryEntry) => {
-    if (!activeTab || !session || !isContextAllowed(session, entry.sourceId, entry.tenant)) return;
-    updateTab(activeTab.id, { query: entry.query, sourceId: entry.sourceId, tenant: entry.tenant, protected: false, contextError: undefined });
+    if (!activeTab || !session || !isContextAllowed(session, entry.sourceId)) return;
+    updateTab(activeTab.id, { query: entry.query, sourceId: entry.sourceId, protected: false, contextError: undefined });
     editorRef.current?.focus();
   };
 
@@ -544,25 +558,27 @@ export default function App() {
     setToast("Local query history cleared");
   };
 
-  const refreshTeamLibrary = async () => {
+  const refreshStarLibrary = async () => {
     try {
-      setTeamLibraries(await getTeamLibrary());
+      const library = await getStarLibrary();
+      setPersonalQueries(library.self);
+      setTeamLibraries(library.teams);
     } catch (error) {
-      setToast(error instanceof Error ? error.message : "Team stars could not be loaded");
+      setToast(error instanceof Error ? error.message : "Starred queries could not be loaded");
     }
   };
 
   const refreshAccountData = async () => {
     try {
-      const [currentSession, libraries] = await Promise.all([getSession(), getTeamLibrary()]);
+      const [currentSession, library] = await Promise.all([getSession(), getStarLibrary()]);
       setSessionState({ kind: "ready", session: currentSession });
-      setTeamLibraries(libraries);
-      setShareTarget((current) => current === session?.user.email ? currentSession.user.email : current);
+      setPersonalQueries(library.self);
+      setTeamLibraries(library.teams);
       setStarTeam((current) => currentSession.user.teams.some((team) => team.id === current) ? current : currentSession.user.teams[0]?.id ?? "");
-      setTabs((current) => current.map((tab) => isContextAllowed(currentSession, tab.sourceId, tab.tenant)
+      setTabs((current) => current.map((tab) => isContextAllowed(currentSession, tab.sourceId)
         ? { ...tab, contextError: undefined }
-        : { ...tab, contextError: "This source or tenant is no longer authorized." }));
-      setHistoryEntries((current) => current.filter((entry) => isContextAllowed(currentSession, entry.sourceId, entry.tenant)));
+        : { ...tab, contextError: "This source is no longer authorized." }));
+      setHistoryEntries((current) => current.filter((entry) => isContextAllowed(currentSession, entry.sourceId)));
     } catch (error) {
       setToast(error instanceof Error ? error.message : "Account data could not be refreshed");
     }
@@ -586,7 +602,7 @@ export default function App() {
     setFolderCreateError("");
     try {
       await createTeamFolder(folderDialogTeam, name, session.csrfToken);
-      await refreshTeamLibrary();
+      await refreshStarLibrary();
       setToast("Team folder created");
       closeFolderDialog();
     } catch (error) {
@@ -596,11 +612,10 @@ export default function App() {
     }
   };
 
-  const openTeamStar = (item: TeamQuery) => {
+  const openStar = (item: StarQuery) => {
     if (!session) return;
-    const tenant = { accountId: item.tenantAccountId, projectId: item.tenantProjectId, name: item.tenantName };
-    if (!isContextAllowed(session, item.sourceId, tenant)) {
-      setToast("You are not authorized for this query’s source or tenant.");
+    if (!isContextAllowed(session, item.sourceId)) {
+      setToast("You are not authorized for this query’s source.");
       return;
     }
     const tab = tabFromTeamStar(item);
@@ -609,16 +624,53 @@ export default function App() {
     setToast(`Opened an editable copy of “${item.title}”`);
   };
 
+  const editPersonalStar = async (item: PersonalQuery, title: string): Promise<boolean> => {
+    if (!session) return false;
+    try {
+      await updatePersonalQuery(item.id, title.trim(), session.csrfToken);
+      await refreshStarLibrary();
+      setToast("Private star updated");
+      return true;
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Private star could not be updated");
+      return false;
+    }
+  };
+
   const editTeamStar = async (item: TeamQuery, title: string, folderId: string): Promise<boolean> => {
     if (!session) return false;
     try {
       await updateTeamQuery(item.id, title.trim(), folderId, session.csrfToken);
-      await refreshTeamLibrary();
+      await refreshStarLibrary();
       setToast("Team star updated");
       return true;
     } catch (error) {
       setToast(error instanceof Error ? error.message : "Team star could not be updated");
       return false;
+    }
+  };
+
+  const starPrivately = async () => {
+    if (!activeTab || !session) return;
+    const title = starName.trim();
+    if (!title) {
+      setToast("Give this star a name.");
+      return;
+    }
+    const payload: SharePayload = {
+      query: editorRef.current?.executableQuery() ?? activeTab.query,
+      sourceId: activeTab.sourceId,
+      title,
+      resultMode: activeTab.resultMode,
+    };
+    try {
+      await createPersonalQuery(payload, session.csrfToken);
+      await refreshStarLibrary();
+      setSidebarMode("stars");
+      setToast("Query starred privately");
+      setStarOpen(false);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Query could not be starred privately");
     }
   };
 
@@ -637,13 +689,12 @@ export default function App() {
     const payload: SharePayload = {
       query: editorRef.current?.executableQuery() ?? activeTab.query,
       sourceId: activeTab.sourceId,
-      tenant: activeTab.tenant,
       title,
       resultMode: activeTab.resultMode,
     };
     try {
       await createTeamQuery(teamId, starFolder, payload, session.csrfToken);
-      await refreshTeamLibrary();
+      await refreshStarLibrary();
       setSidebarMode("stars");
       setToast("Query starred for the team");
       setStarOpen(false);
@@ -676,14 +727,61 @@ export default function App() {
   }
   if (!activeTab) return <Splash />;
 
-  const running = activeTab.status === "running" || activeTab.status === "tailing";
+  const running = activeTab.status === "running";
   const stale = Boolean(activeTab.lastExecutedQuery && activeTab.query !== activeTab.lastExecutedQuery);
+  const workbenchStyle = {
+    "--editor-pane-size": `${editorPanePercent}fr`,
+    "--results-pane-size": `${100 - editorPanePercent}fr`,
+  } as CSSProperties;
+
+  const startPaneResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const workbench = event.currentTarget.closest<HTMLElement>(".query-workbench");
+    const editor = workbench?.querySelector<HTMLElement>(".editor-panel");
+    const results = workbench?.querySelector<HTMLElement>(".results-panel");
+    if (!editor || !results) return;
+    paneResizeRef.current = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startEditorHeight: editor.getBoundingClientRect().height,
+      totalHeight: editor.getBoundingClientRect().height + results.getBoundingClientRect().height,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    document.body.classList.add("resizing-panes");
+    event.preventDefault();
+  };
+
+  const movePaneResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = paneResizeRef.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    const nextHeight = resize.startEditorHeight + event.clientY - resize.startY;
+    setEditorPanePercent(clampEditorPanePercent((nextHeight / resize.totalHeight) * 100));
+  };
+
+  const stopPaneResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = paneResizeRef.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    paneResizeRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    document.body.classList.remove("resizing-panes");
+  };
+
+  const resizePaneWithKeyboard = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    let next = editorPanePercent;
+    if (event.key === "ArrowUp") next -= 4;
+    else if (event.key === "ArrowDown") next += 4;
+    else if (event.key === "Home") next = MIN_EDITOR_PANE_PERCENT;
+    else if (event.key === "End") next = MAX_EDITOR_PANE_PERCENT;
+    else return;
+    event.preventDefault();
+    setEditorPanePercent(clampEditorPanePercent(next));
+  };
 
   return (
     <div className="app-shell">
       <header className="app-header">
         <div className="brand"><div className="brand-mark"><span /><span /><span /></div><div><strong>Vesta</strong><small>LOG EXPLORER</small></div></div>
-        <div className="header-context"><span className="connection-pulse" />{activeSource?.name ?? "Unavailable source"}<span>/</span>{activeTab.tenant.name}</div>
+        <div className="header-context"><span className="connection-pulse" />{activeSource?.name ?? "Unavailable source"}</div>
         <div className="header-actions">
           <button className="icon-button" aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>{theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}</button>
           <button className="icon-button" aria-label="Change password" onClick={() => setPasswordOpen(true)}><KeyRound size={16} /></button>
@@ -708,86 +806,138 @@ export default function App() {
           mode={sidebarMode}
           onMode={setSidebarMode}
           history={historyEntries}
+          personalQueries={personalQueries}
           teamLibraries={teamLibraries}
           onRecall={recall}
-          onOpenTeamStar={openTeamStar}
+          onOpenStar={openStar}
+          onEditPersonalStar={editPersonalStar}
           onEditTeamStar={editTeamStar}
           onCreateFolder={openFolderDialog}
           onClearHistory={clearHistory}
         />
 
-        <section className="query-workbench">
+        <section className="query-workbench" style={workbenchStyle}>
           <div className="query-toolbar">
             <label className="compact-select"><span>Source</span><select value={activeTab.sourceId} onChange={(event) => setSource(event.target.value)} disabled={running}>{session.sources.map((source) => <option value={source.id} key={source.id}>{source.name}</option>)}</select><ChevronDown size={13} /></label>
-            <label className="compact-select"><span>Tenant</span><select value={`${activeTab.tenant.accountId}:${activeTab.tenant.projectId}`} onChange={(event) => setTenant(event.target.value)} disabled={running}>{activeSource?.tenants.map((tenant) => <option value={`${tenant.accountId}:${tenant.projectId}`} key={`${tenant.accountId}:${tenant.projectId}`}>{tenant.name}</option>)}</select><ChevronDown size={13} /></label>
             <div className="toolbar-divider" />
-            <button className="primary-button" onClick={() => executeActive(false)} disabled={running || Boolean(activeTab.contextError)}><Play size={15} fill="currentColor" /> Run <kbd>⇧↵</kbd></button>
-            <button className="toolbar-button" onClick={() => executeActive(true)} disabled={running || Boolean(activeTab.contextError)}><Radio size={15} /> Live tail</button>
+            <button className="primary-button" onClick={() => executeActive()} disabled={running || Boolean(activeTab.contextError)}><Play size={15} fill="currentColor" /> Run <kbd>⇧↵</kbd></button>
             <button className="toolbar-button danger" onClick={() => cancel(activeTab.id)} disabled={!running}><CircleStop size={15} /> Cancel</button>
             <div className="toolbar-spacer" />
             <div className="menu-wrap">
               <button
                 className="toolbar-button"
-                title={(session.user.teams ?? []).length === 0 ? "Join a team to star queries" : "Star this query for a team"}
-                disabled={(session.user.teams ?? []).length === 0}
+                title="Save this query to your private or team stars"
                 onClick={() => {
                   const opening = !starOpen;
                   setStarOpen(opening);
-                  if (opening) setStarName("");
+                  if (opening) {
+                    setStarCollection("private");
+                    setStarName("");
+                  }
                   setShareOpen(false);
                   setExportOpen(false);
                 }}
               >
                 <Star size={15} fill={starOpen ? "currentColor" : "none"} /> Star <ChevronDown size={13} />
               </button>
-              {starOpen && <div className="popover-menu">
-                <div className="share-audience">
-                  <label className="star-name-field">
-                    <span>NAME</span>
-                    <input autoFocus maxLength={256} required value={starName} onChange={(event) => setStarName(event.target.value)} placeholder="Name this team star" />
-                  </label>
-                  <label>
-                    <span>TEAM</span>
-                    <select value={starTeam} onChange={(event) => { setStarTeam(event.target.value); setStarFolder(""); }}>
-                      {(session.user.teams ?? []).map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
-                    </select>
-                  </label>
-                  <label>
-                    <span>FOLDER</span>
-                    <select value={starFolder} onChange={(event) => setStarFolder(event.target.value)}>
-                      <option value="">No folder</option>
-                      {(teamLibraries.find((library) => library.team.id === starTeam)?.folders ?? []).map((folder) => <option value={folder.id} key={folder.id}>{folder.name}</option>)}
-                    </select>
-                  </label>
-                  <small>Saves an editable query snapshot that every authorized team member can reuse.</small>
+              {starOpen && <div className="popover-menu star-popover">
+                <div className="star-scope-tabs" role="tablist" aria-label="Star collection">
+                  <button
+                    id="private-star-tab"
+                    type="button"
+                    role="tab"
+                    aria-selected={starCollection === "private"}
+                    aria-controls="private-star-panel"
+                    className={starCollection === "private" ? "active" : ""}
+                    onClick={() => setStarCollection("private")}
+                  >
+                    <LockKeyhole size={14} /> Private
+                  </button>
+                  <button
+                    id="team-star-tab"
+                    type="button"
+                    role="tab"
+                    aria-selected={starCollection === "team"}
+                    aria-controls="team-star-panel"
+                    className={starCollection === "team" ? "active" : ""}
+                    disabled={(session.user.teams ?? []).length === 0}
+                    title={(session.user.teams ?? []).length === 0 ? "Join a team to use team stars" : "Save to a team collection"}
+                    onClick={() => setStarCollection("team")}
+                  >
+                    <Users size={14} /> Team
+                  </button>
                 </div>
-                <button disabled={!starName.trim()} onClick={() => void starForTeam()}><Star size={15} fill="currentColor" /><span><strong>Star for team</strong><small>Add to the reusable team library</small></span></button>
+                <form
+                  id={`${starCollection}-star-panel`}
+                  className="star-popover-form"
+                  role="tabpanel"
+                  aria-labelledby={`${starCollection}-star-tab`}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (!starName.trim()) return;
+                    void (starCollection === "private" ? starPrivately() : starForTeam());
+                  }}
+                >
+                  <div className="share-audience star-form-fields">
+                    <label className="star-name-field">
+                      <span>NAME</span>
+                      <input autoFocus maxLength={256} required value={starName} onChange={(event) => setStarName(event.target.value)} placeholder="Name this starred query" />
+                    </label>
+                    {starCollection === "team" && <>
+                      <label>
+                        <span>TEAM</span>
+                        <select value={starTeam} onChange={(event) => { setStarTeam(event.target.value); setStarFolder(""); }}>
+                          {(session.user.teams ?? []).map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
+                        </select>
+                      </label>
+                      <label>
+                        <span>FOLDER</span>
+                        <select value={starFolder} onChange={(event) => setStarFolder(event.target.value)}>
+                          <option value="">No folder</option>
+                          {(teamLibraries.find((library) => library.team.id === starTeam)?.folders ?? []).map((folder) => <option value={folder.id} key={folder.id}>{folder.name}</option>)}
+                        </select>
+                      </label>
+                    </>}
+                    <small>{starCollection === "private" ? "Only you can view and reuse this star." : "Every authorized team member can view and reuse this star."}</small>
+                  </div>
+                  <button className="star-submit" type="submit" disabled={!starName.trim()}>
+                    {starCollection === "private" ? <LockKeyhole size={15} /> : <Users size={15} />}
+                    <span><strong>{starCollection === "private" ? "Save private star" : "Save team star"}</strong></span>
+                  </button>
+                </form>
               </div>}
             </div>
             <div className="menu-wrap">
-              <button className="toolbar-button" onClick={() => { setShareOpen(!shareOpen); setStarOpen(false); setExportOpen(false); }}><Share2 size={15} /> Share <ChevronDown size={13} /></button>
-              {shareOpen && <div className="popover-menu">
-                <div className="share-audience">
-                  <label>
-                    <span>SHARE WITH</span>
-                    <select value={shareAudience} onChange={(event) => {
-                      const type = event.target.value as ShareAudience["type"];
-                      setShareAudience(type);
-                      setShareTarget(type === "team" ? (session.user.teams ?? [])[0]?.id ?? "" : session.user.email);
-                    }}>
-                      <option value="user">User</option>
-                      <option value="team" disabled={(session.user.teams ?? []).length === 0}>Team</option>
-                    </select>
-                  </label>
-                  {shareAudience === "user"
-                    ? <input aria-label="Share recipient" value={shareTarget} onChange={(event) => setShareTarget(event.target.value)} placeholder="email or subject" />
-                    : <select aria-label="Share team" value={shareTarget} onChange={(event) => setShareTarget(event.target.value)}>{(session.user.teams ?? []).map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select>}
-                  <small>Login is required. The recipient’s log access is checked again.</small>
-                </div>
-                <button onClick={() => void copyLink()}><Share2 size={15} /><span><strong>Copy private link</strong><small>Opaque ID · expires automatically</small></span></button>
-                <button onClick={() => void copyQueryLinkAndResults()} disabled={activeTab.rows.length === 0}><Copy size={15} /><span><strong>Copy query, private link &amp; results</strong><small>{activeTab.resultMode === "chart" ? "Rich HTML with chart image · Markdown fallback" : "Rich HTML · Markdown fallback"}</small></span></button>
-                <button onClick={copyQuery}><TerminalSquare size={15} /><span><strong>Copy query</strong><small>Selected text or full editor</small></span></button>
-                <button onClick={() => void copyResults()} disabled={activeTab.rows.length === 0}><Copy size={15} /><span><strong>{activeTab.resultMode === "chart" ? "Copy chart image" : "Copy results"}</strong><small>{activeTab.resultMode === "chart" ? "PNG · source-data fallback" : "TSV or NDJSON · max 5 MiB"}</small></span></button>
+              <button className="toolbar-button" onClick={openShareMenu}><Share2 size={15} /> Share <ChevronDown size={13} /></button>
+              {shareOpen && <div className="popover-menu share-popover">
+                <form onSubmit={(event) => { event.preventDefault(); void copySelectedShare(); }}>
+                  <div className="share-popover-heading">
+                    <strong>Choose what to copy</strong>
+                    <small>Combine any of these in one share.</small>
+                  </div>
+                  <fieldset className="share-options">
+                    <legend>INCLUDE</legend>
+                    <label className={shareParts.link ? "active" : ""}>
+                      <input type="checkbox" checked={shareParts.link} onChange={() => toggleSharePart("link")} />
+                      <Share2 size={15} />
+                      <span><strong>Link</strong><small>Opens in Vesta</small></span>
+                    </label>
+                    <label className={shareParts.query ? "active" : ""}>
+                      <input type="checkbox" checked={shareParts.query} onChange={() => toggleSharePart("query")} />
+                      <Braces size={15} />
+                      <span><strong>Query</strong><small>LogsQL text</small></span>
+                    </label>
+                    <label className={shareParts.results ? "active" : ""}>
+                      <input type="checkbox" checked={shareParts.results} disabled={activeTab.rows.length === 0} onChange={() => toggleSharePart("results")} />
+                      <Copy size={15} />
+                      <span><strong>Results</strong><small>{activeTab.rows.length === 0 ? "Run query first" : activeTab.resultMode === "chart" ? "Chart + source data" : `${activeTab.rows.length.toLocaleString()} rows`}</small></span>
+                    </label>
+                  </fieldset>
+                  <div className="share-access-note"><Users size={14} /><span><strong>Available to signed-in users</strong><small>Source permissions still apply.</small></span></div>
+                  <button className="share-submit" type="submit" disabled={!Object.values(shareParts).some(Boolean)}>
+                    <Copy size={15} /><span><strong>Copy selected</strong><small>Rich format with Markdown fallback</small></span>
+                  </button>
+                </form>
               </div>}
             </div>
             <div className="menu-wrap">
@@ -797,11 +947,11 @@ export default function App() {
           </div>
 
           <div className="notices">
-            {activeTab.protected && <div className="protected-banner"><Share2 size={16} /><span><strong>Protected shared query.</strong> Review the LogsQL and context, then choose Run explicitly.</span><button onClick={() => updateTab(activeTab.id, { protected: false })}><X size={14} /></button></div>}
+            {activeTab.protected && <div className="protected-banner"><Share2 size={16} /><span><strong>Shared query.</strong> Review the LogsQL and context, then choose Run explicitly.</span><button onClick={() => updateTab(activeTab.id, { protected: false })}><X size={14} /></button></div>}
             {activeTab.contextError && <div className="error-banner"><X size={16} /><span>{activeTab.contextError}</span></div>}
           </div>
 
-          <div className="editor-panel">
+          <div className="editor-panel" id="query-editor-panel">
             <div className="panel-caption"><span>LOGSQL</span><span>{hasTimeFilter(activeTab.query) ? <><i className="valid-dot" /> explicit time filter</> : <><i className="invalid-dot" /> _time: required</>}</span></div>
             <QueryEditor
               key={activeTab.id}
@@ -810,11 +960,37 @@ export default function App() {
               fields={EMPTY_EDITOR_FIELDS}
               dark={theme === "dark"}
               onChange={(query) => updateTab(activeTab.id, { query, error: undefined })}
-              onRun={(query) => executeActive(false, query)}
+              onRun={(query) => executeActive(query)}
             />
           </div>
 
-          <div className="results-panel">
+          <div
+            className="pane-resizer"
+            role="separator"
+            aria-label="Resize query editor and results"
+            aria-controls="query-editor-panel query-results-panel"
+            aria-orientation="horizontal"
+            aria-valuemin={MIN_EDITOR_PANE_PERCENT}
+            aria-valuemax={MAX_EDITOR_PANE_PERCENT}
+            aria-valuenow={Math.round(editorPanePercent)}
+            aria-valuetext={`${Math.round(editorPanePercent)}% editor height`}
+            tabIndex={0}
+            title="Drag to resize · Double-click to reset"
+            onPointerDown={startPaneResize}
+            onPointerMove={movePaneResize}
+            onPointerUp={stopPaneResize}
+            onPointerCancel={stopPaneResize}
+            onLostPointerCapture={() => {
+              paneResizeRef.current = null;
+              document.body.classList.remove("resizing-panes");
+            }}
+            onDoubleClick={() => setEditorPanePercent(DEFAULT_EDITOR_PANE_PERCENT)}
+            onKeyDown={resizePaneWithKeyboard}
+          >
+            <span />
+          </div>
+
+          <div className="results-panel" id="query-results-panel">
             <div className="results-header">
               <div className="result-tabs" role="tablist" aria-label="Result view">
                 {activeVisualization && activeVisualization.visualization !== "table" && (
@@ -830,7 +1006,6 @@ export default function App() {
                 <span className={`run-state ${activeTab.status}`}>{running && <i />} {activeTab.status}</span>
                 <span>{(activeTab.stats?.rows ?? activeTab.rows.length).toLocaleString()} rows</span>
                 {activeTab.stats && <><span>{humanBytes(activeTab.stats.bytes)}</span><span>{activeTab.stats.elapsedMs.toLocaleString()} ms</span></>}
-                {activeTab.droppedRows > 0 && <span className="warning-text">{activeTab.droppedRows.toLocaleString()} live rows dropped</span>}
               </div>
             </div>
             {activeTab.warning && <div className="warning-banner">{activeTab.warning}</div>}
@@ -898,7 +1073,7 @@ function SignIn() {
         {message && <div className="signin-error">{message}</div>}
         <button className="primary-button large-button" disabled={busy}><Play size={16} /> {busy ? "Signing in…" : "Sign in"}</button>
       </form>
-      <small>Users, passwords, teams, folders, team stars, and private shares are stored in SQLite.</small>
+      <small>Users, passwords, teams, folders, stars, and share links are stored in SQLite.</small>
     </div>
   );
 }

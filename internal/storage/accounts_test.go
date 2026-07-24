@@ -56,8 +56,7 @@ func TestLocalAccountsTeamsAndQueryFolders(t *testing.T) {
 	}
 	item, err := store.CreateTeamQuery(ctx, CreateTeamQueryInput{
 		TeamID: admin.Teams[0].ID, FolderID: folder.ID, Title: "Recent errors",
-		Query: "_time:1h error", SourceID: "prod", TenantAccountID: "12",
-		TenantProjectID: "34", TenantName: "payments", ResultMode: "table", CreatedBy: member.ID,
+		Query: "_time:1h error", SourceID: "prod", ResultMode: "table", CreatedBy: member.ID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -99,6 +98,38 @@ func TestLocalAccountsTeamsAndQueryFolders(t *testing.T) {
 	}
 	if err := store.AddTeamMember(ctx, admin.Teams[0].ID, other.ID); err != nil {
 		t.Fatal(err)
+	}
+	privateItem, err := store.CreatePersonalQuery(ctx, CreatePersonalQueryInput{
+		UserID: member.ID, Title: "My investigation", Query: "_time:30m warning",
+		SourceID: "prod", ResultMode: "table",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	personal, err := store.ListPersonalQueries(ctx, member.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(personal) != 1 || personal[0].ID != privateItem.ID {
+		t.Fatalf("unexpected personal library: %#v", personal)
+	}
+	adminPersonal, err := store.ListPersonalQueries(ctx, admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(adminPersonal) != 0 {
+		t.Fatalf("another user's personal stars were visible: %#v", adminPersonal)
+	}
+	if _, err := store.UpdatePersonalQuery(ctx, UpdatePersonalQueryInput{
+		ID: privateItem.ID, UserID: other.ID, Title: "Not mine",
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another user updated a personal star: %v", err)
+	}
+	privateItem, err = store.UpdatePersonalQuery(ctx, UpdatePersonalQueryInput{
+		ID: privateItem.ID, UserID: member.ID, Title: "My renamed investigation",
+	})
+	if err != nil || privateItem.Title != "My renamed investigation" {
+		t.Fatalf("personal star was not renamed: item=%#v err=%v", privateItem, err)
 	}
 	collaborativeUpdate, err := store.UpdateTeamQuery(ctx, UpdateTeamQueryInput{
 		ID: item.ID, FolderID: "", Title: "Team-owned errors", UserID: other.ID,

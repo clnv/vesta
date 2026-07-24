@@ -23,7 +23,6 @@ limits:
   max_rows: 50000
   max_bytes: 33554432
   max_queries_per_user: 4
-  max_tails_per_user: 2
   max_line_bytes: 8388608
 
 sources:
@@ -31,10 +30,6 @@ sources:
     name: "Local VictoriaLogs"
     url: "http://localhost:9428"
     roles: ["dev"]
-    tenants:
-      - account_id: "0"
-        project_id: "0"
-        name: "default"
     auth:
       type: "none"
     hidden_fields: []
