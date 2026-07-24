@@ -17,6 +17,10 @@ type changePasswordRequest struct {
 	NewPassword     string `json:"newPassword"`
 }
 
+type updateSettingsRequest struct {
+	HiddenResultFields *[]string `json:"hiddenResultFields"`
+}
+
 type createUserRequest struct {
 	Email    string   `json:"email"`
 	Name     string   `json:"name"`
@@ -70,6 +74,29 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
+	var input updateSettingsRequest
+	if !decodeAPIJSON(w, r, &input) {
+		return
+	}
+	if input.HiddenResultFields == nil {
+		writeJSONError(w, http.StatusBadRequest, "hiddenResultFields is required")
+		return
+	}
+	user := auth.MustUser(r.Context())
+	settings, err := s.store.UpdateUserSettings(r.Context(), user.Subject, storage.UserSettings{
+		HiddenResultFields: *input.HiddenResultFields,
+	})
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, settings)
+	case errors.Is(err, storage.ErrNotFound):
+		writeJSONError(w, http.StatusNotFound, "user was not found")
+	default:
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+	}
 }
 
 func (s *Server) handleDirectory(w http.ResponseWriter, r *http.Request) {

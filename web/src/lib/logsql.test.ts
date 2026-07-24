@@ -22,22 +22,23 @@ describe("queryAtCursor", () => {
     expect(queryAtCursor(document, document.indexOf("warning"))).toBe("_time:1h warning\n| stats count()");
   });
 
-  it("keeps pipeline continuations separated by blank lines in one query", () => {
+  it("treats a blank line before a pipeline stage as a query boundary", () => {
     const document = [
-      "_time:5m",
+      "_time:1h",
+      "| rename log.level as level",
+      "| sort by (_time) desc",
+      "| limit 1",
       "",
-      "# aggregate the matching logs",
-      "| stats count()",
-      "",
-      "_time:1h warning",
+      "| keep _time, level, _msg",
     ].join("\n");
 
-    expect(queryAtCursor(document, document.indexOf("stats"))).toBe([
-      "_time:5m",
-      "",
-      "# aggregate the matching logs",
-      "| stats count()",
+    expect(queryAtCursor(document, document.indexOf("limit"))).toBe([
+      "_time:1h",
+      "| rename log.level as level",
+      "| sort by (_time) desc",
+      "| limit 1",
     ].join("\n"));
+    expect(queryAtCursor(document, document.indexOf("keep"))).toBe("| keep _time, level, _msg");
   });
 
   it("uses unquoted semicolons as explicit query terminators", () => {

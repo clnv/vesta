@@ -15,6 +15,8 @@ import (
 
 const dummyPasswordHash = "$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2uheWG/igi."
 
+var defaultHiddenResultFields = []string{"_stream", "_stream_id", "file", "stream", "timestamp"}
+
 type User struct {
 	ID        string    `json:"id"`
 	Email     string    `json:"email"`
@@ -65,6 +67,14 @@ type UpdateUserInput struct {
 	IsAdmin  bool
 	Disabled bool
 	TeamIDs  []string
+}
+
+type UserSettings struct {
+	HiddenResultFields []string `json:"hiddenResultFields"`
+}
+
+func DefaultUserSettings() UserSettings {
+	return UserSettings{HiddenResultFields: slices.Clone(defaultHiddenResultFields)}
 }
 
 func (s *Store) EnsureBootstrapAdmin(ctx context.Context, input BootstrapUser) error {
@@ -342,6 +352,63 @@ func (s *Store) UpdatePassword(ctx context.Context, userID, currentPassword, new
 	return nil
 }
 
+func (s *Store) GetUserSettings(ctx context.Context, userID string) (UserSettings, error) {
+	var encoded sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT user_settings.hidden_result_fields
+		FROM users
+		LEFT JOIN user_settings ON user_settings.user_id = users.id
+		WHERE users.id = ?`,
+		userID,
+	).Scan(&encoded)
+	if errors.Is(err, sql.ErrNoRows) {
+		return UserSettings{}, ErrNotFound
+	}
+	if err != nil {
+		return UserSettings{}, fmt.Errorf("load user settings: %w", err)
+	}
+	if !encoded.Valid {
+		return DefaultUserSettings(), nil
+	}
+	var settings UserSettings
+	if err := json.Unmarshal([]byte(encoded.String), &settings.HiddenResultFields); err != nil {
+		return UserSettings{}, fmt.Errorf("decode hidden result fields: %w", err)
+	}
+	if settings.HiddenResultFields == nil {
+		settings.HiddenResultFields = []string{}
+	}
+	return settings, nil
+}
+
+func (s *Store) UpdateUserSettings(ctx context.Context, userID string, settings UserSettings) (UserSettings, error) {
+	fields, err := normalizeHiddenResultFields(settings.HiddenResultFields)
+	if err != nil {
+		return UserSettings{}, err
+	}
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		return UserSettings{}, fmt.Errorf("encode hidden result fields: %w", err)
+	}
+	var exists int
+	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM users WHERE id = ?", userID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return UserSettings{}, ErrNotFound
+		}
+		return UserSettings{}, fmt.Errorf("load user for settings update: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO user_settings (user_id, hidden_result_fields, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT (user_id) DO UPDATE
+		SET hidden_result_fields = excluded.hidden_result_fields, updated_at = excluded.updated_at`,
+		userID, string(encoded), time.Now().Unix(),
+	)
+	if err != nil {
+		return UserSettings{}, fmt.Errorf("update user settings: %w", err)
+	}
+	return UserSettings{HiddenResultFields: fields}, nil
+}
+
 func (s *Store) CreateTeam(ctx context.Context, name string) (Team, error) {
 	name = strings.TrimSpace(name)
 	if name == "" || len(name) > 120 {
@@ -573,6 +640,26 @@ func normalizedIDs(ids []string) []string {
 	}
 	slices.Sort(ids)
 	return slices.Compact(ids)
+}
+
+func normalizeHiddenResultFields(fields []string) ([]string, error) {
+	if len(fields) > 100 {
+		return nil, errors.New("hidden result fields must contain no more than 100 entries")
+	}
+	normalized := make([]string, 0, len(fields))
+	seen := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" || len(field) > 256 {
+			return nil, errors.New("hidden result fields must be non-empty and must not exceed 256 characters")
+		}
+		if _, exists := seen[field]; exists {
+			continue
+		}
+		seen[field] = struct{}{}
+		normalized = append(normalized, field)
+	}
+	return normalized, nil
 }
 
 func encodeRoles(roles []string) (string, error) {

@@ -47,6 +47,7 @@ func New(cfg *config.Config, authenticator *auth.Authenticator, store *storage.S
 	mux.HandleFunc("GET /auth/logout", authenticator.Logout)
 	mux.Handle("GET /api/v1/session", s.withUser(http.HandlerFunc(s.handleSession)))
 	mux.Handle("POST /api/v1/account/password", s.withUser(http.HandlerFunc(s.handleChangePassword)))
+	mux.Handle("PUT /api/v1/account/settings", s.withUser(http.HandlerFunc(s.handleUpdateSettings)))
 	mux.Handle("POST /api/v1/query", s.withUser(http.HandlerFunc(s.handleStream)))
 	mux.Handle("POST /api/v1/fields", s.withUser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.handleMetadata(w, r, false) })))
 	mux.Handle("POST /api/v1/field-values", s.withUser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.handleMetadata(w, r, true) })))
@@ -110,7 +111,11 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user":      map[string]any{"subject": user.Subject, "email": user.Email, "name": user.Name, "teams": teams, "isAdmin": user.IsAdmin},
+		"user": map[string]any{
+			"subject": user.Subject, "email": user.Email, "name": user.Name,
+			"teams": teams, "isAdmin": user.IsAdmin,
+			"settings": map[string]any{"hiddenResultFields": slices.Clone(user.HiddenResultFields)},
+		},
 		"sources":   sources,
 		"csrfToken": user.CSRF,
 		"limits": map[string]any{

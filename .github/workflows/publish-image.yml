@@ -26,18 +26,19 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  publish:
-    name: Build and publish ${{ matrix.component }}
+  build:
+    name: Build ${{ matrix.component }} (${{ matrix.platform }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - component: api
-            dockerfile: api.Dockerfile
-          - component: web
-            dockerfile: web.Dockerfile
+        component:
+          - api
+          - web
+        platform:
+          - linux/amd64
+          - linux/arm64
     steps:
       - name: Validate release tag
         if: inputs.release_tag != ''
@@ -55,7 +56,15 @@ jobs:
         with:
           ref: ${{ inputs.release_tag || github.ref }}
 
+      - name: Prepare platform name
+        id: platform
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: echo "slug=${PLATFORM//\//-}" >> "$GITHUB_OUTPUT"
+
       - name: Set up QEMU
+        if: matrix.platform == 'linux/arm64'
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
         with:
           platforms: arm64
@@ -90,15 +99,112 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push image
+        id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          file: ${{ matrix.component }}.Dockerfile
+          platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.component }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.component }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.component }}-${{ steps.platform.outputs.slug }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}-${{ steps.platform.outputs.slug }}
           sbom: true
           provenance: mode=max
+
+      - name: Export image digest
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digests-${{ matrix.component }}-${{ steps.platform.outputs.slug }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish ${{ matrix.component }} manifest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs:
+      - build
+    strategy:
+      fail-fast: false
+      matrix:
+        component:
+          - api
+          - web
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+
+      - name: Download image digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: digests-${{ matrix.component }}-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          context: git
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.component }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=${{ inputs.release_tag }},enable=${{ inputs.release_tag != '' }}
+            type=semver,pattern={{version}},value=${{ inputs.release_tag }},enable=${{ inputs.release_tag != '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.release_tag }},enable=${{ inputs.release_tag != '' }}
+            type=semver,pattern={{major}},value=${{ inputs.release_tag }},enable=${{ inputs.release_tag != '' }}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Create and push multi-platform manifest
+        shell: bash
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.component }}
+          METADATA_JSON: ${{ steps.meta.outputs.json }}
+        run: |
+          shopt -s nullglob
+          digest_paths=(/tmp/digests/*)
+          if (( ${#digest_paths[@]} != 2 )); then
+            echo "expected 2 platform digests, found ${#digest_paths[@]}"
+            exit 1
+          fi
+
+          mapfile -t image_tags < <(jq -r '.tags[]' <<< "$METADATA_JSON")
+          tag_args=()
+          for image_tag in "${image_tags[@]}"; do
+            tag_args+=(--tag "$image_tag")
+          done
+
+          image_sources=()
+          for digest_path in "${digest_paths[@]}"; do
+            image_sources+=("${IMAGE}@sha256:$(basename "$digest_path")")
+          done
+
+          docker buildx imagetools create "${tag_args[@]}" "${image_sources[@]}"
+          docker buildx imagetools inspect "${image_tags[0]}"

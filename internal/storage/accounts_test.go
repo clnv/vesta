@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -170,6 +171,75 @@ func TestAccountValidationAndMembershipBoundaries(t *testing.T) {
 	}
 	if _, err := store.CreateFolder(ctx, "missing-team", "Folder", "missing-user"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("non-member folder error = %v", err)
+	}
+}
+
+func TestUserSettingsHaveDefaultsAndRemainPrivate(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+
+	if err := store.EnsureBootstrapAdmin(ctx, BootstrapUser{
+		Email: "admin@example.test", Name: "Admin", Password: "correct-horse-battery",
+		Team: "Platform", Roles: []string{"reader"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	admin, err := store.Authenticate(ctx, "admin@example.test", "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err := store.CreateUser(ctx, CreateUserInput{
+		Email: "member@example.test", Name: "Member", Password: "another-secure-password",
+		Roles: []string{"reader"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	adminSettings, err := store.GetUserSettings(ctx, admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(adminSettings.HiddenResultFields, DefaultUserSettings().HiddenResultFields) {
+		t.Fatalf("unexpected default settings: %#v", adminSettings)
+	}
+
+	updated, err := store.UpdateUserSettings(ctx, admin.ID, UserSettings{
+		HiddenResultFields: []string{" trace_* ", "request_id", "trace_*"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(updated.HiddenResultFields, []string{"trace_*", "request_id"}) {
+		t.Fatalf("unexpected normalized settings: %#v", updated)
+	}
+	reloaded, err := store.GetUserSettings(ctx, admin.ID)
+	if err != nil || !slices.Equal(reloaded.HiddenResultFields, updated.HiddenResultFields) {
+		t.Fatalf("settings did not persist: settings=%#v err=%v", reloaded, err)
+	}
+	memberSettings, err := store.GetUserSettings(ctx, member.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(memberSettings.HiddenResultFields, DefaultUserSettings().HiddenResultFields) {
+		t.Fatalf("another user's settings changed: %#v", memberSettings)
+	}
+
+	cleared, err := store.UpdateUserSettings(ctx, admin.ID, UserSettings{HiddenResultFields: []string{}})
+	if err != nil || len(cleared.HiddenResultFields) != 0 {
+		t.Fatalf("empty hidden field list was not accepted: settings=%#v err=%v", cleared, err)
+	}
+	if _, err := store.UpdateUserSettings(ctx, admin.ID, UserSettings{
+		HiddenResultFields: []string{"valid", " "},
+	}); err == nil {
+		t.Fatal("blank hidden result field was accepted")
+	}
+	if _, err := store.GetUserSettings(ctx, "missing-user"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing user settings error = %v", err)
 	}
 }
 

@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, Copy } from "lucide-react";
 import { useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { orderedColumns } from "../lib/format";
 import { columnsFromQuery, type RenderDirective } from "../lib/logsql";
+import { filterResultRows, isHiddenResultField } from "../lib/resultFields";
 import type { ResultMode } from "../types";
 import { ChartViewer } from "./ChartViewer";
 
@@ -11,6 +12,7 @@ interface Props {
   mode: ResultMode;
   query?: string;
   visualization?: RenderDirective | null;
+  hiddenResultFields?: string[];
   onCopy(value: string): void;
 }
 
@@ -50,16 +52,23 @@ function levelClass(row: Record<string, unknown>): string {
   }
 }
 
-export function ResultViewer({ rows, mode, query = "", visualization, onCopy }: Props) {
+export function ResultViewer({ rows, mode, query = "", visualization, hiddenResultFields = [], onCopy }: Props) {
   const parentRef = useRef<HTMLDivElement>(null);
   const resizeRef = useRef<{ column: string; pointerId: number; startX: number; startWidth: number } | null>(null);
   const [expanded, setExpanded] = useState<ExpandedDetail | null>(null);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
-  const columns = useMemo(() => orderedColumns(rows, columnsFromQuery(query)), [query, rows]);
+  const visibleRows = useMemo(() => filterResultRows(rows, hiddenResultFields), [hiddenResultFields, rows]);
+  const columns = useMemo(
+    () => orderedColumns(
+      visibleRows,
+      columnsFromQuery(query).filter((column) => !isHiddenResultField(column, hiddenResultFields)),
+    ),
+    [hiddenResultFields, query, visibleRows],
+  );
   const tableGridTemplate = `${TABLE_EXPAND_COLUMN_WIDTH}px ${columns.map((column) => columnWidths[column] ? `${columnWidths[column]}px` : `minmax(${TABLE_COLUMN_MIN_WIDTH}px, 1fr)`).join(" ")}`;
   const tableWidth = `max(100%, ${TABLE_EXPAND_COLUMN_WIDTH + columns.reduce((width, column) => width + (columnWidths[column] ?? TABLE_COLUMN_MIN_WIDTH), 0)}px)`;
   const rowVirtualizer = useVirtualizer({
-    count: rows.length,
+    count: visibleRows.length,
     getScrollElement: () => parentRef.current,
     estimateSize: () => 34,
     overscan: 12,
@@ -113,7 +122,7 @@ export function ResultViewer({ rows, mode, query = "", visualization, onCopy }: 
     });
   };
 
-  if (rows.length === 0) {
+  if (visibleRows.length === 0) {
     return (
       <div className="result-empty">
         <div className="empty-orbit"><span /></div>
@@ -125,7 +134,7 @@ export function ResultViewer({ rows, mode, query = "", visualization, onCopy }: 
 
   if (mode === "chart") {
     return visualization
-      ? <ChartViewer rows={rows} directive={visualization} preferredColumns={columns} />
+      ? <ChartViewer rows={visibleRows} directive={visualization} preferredColumns={columns} />
       : (
         <div className="chart-message">
           <strong>No visualization directive</strong>
@@ -168,7 +177,7 @@ export function ResultViewer({ rows, mode, query = "", visualization, onCopy }: 
         style={{ height: `${rowVirtualizer.getTotalSize()}px`, width: mode === "table" ? tableWidth : undefined }}
       >
         {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-          const row = rows[virtualRow.index];
+          const row = visibleRows[virtualRow.index];
           if (mode === "table") {
             const detail = expanded?.row === virtualRow.index ? expanded : null;
             const jsonOpen = detail?.kind === "json";

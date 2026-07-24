@@ -6,8 +6,19 @@ export interface Source {
   name: string;
 }
 
+export interface UserSettings {
+  hiddenResultFields: string[];
+}
+
 export interface Session {
-  user: { subject: string; email: string; name: string; teams: Team[]; isAdmin: boolean };
+  user: {
+    subject: string;
+    email: string;
+    name: string;
+    teams: Team[];
+    isAdmin: boolean;
+    settings: UserSettings;
+  };
   sources: Source[];
   csrfToken: string;
   limits: {

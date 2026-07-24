@@ -94,6 +94,11 @@ func (s *Store) initialize(ctx context.Context, persistent bool) error {
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		) STRICT`,
+		`CREATE TABLE IF NOT EXISTS user_settings (
+			user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+			hidden_result_fields TEXT NOT NULL,
+			updated_at INTEGER NOT NULL
+		) STRICT`,
 		`CREATE TABLE IF NOT EXISTS teams (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL COLLATE NOCASE UNIQUE,

@@ -26,14 +26,15 @@ type Team struct {
 }
 
 type User struct {
-	Subject string
-	Email   string
-	Name    string
-	Roles   []string
-	Teams   []Team
-	IsAdmin bool
-	CSRF    string
-	Expires int64
+	Subject            string
+	Email              string
+	Name               string
+	Roles              []string
+	Teams              []Team
+	IsAdmin            bool
+	HiddenResultFields []string
+	CSRF               string
+	Expires            int64
 }
 
 type sessionClaims struct {
@@ -85,19 +86,24 @@ func (a *Authenticator) Current(r *http.Request) (User, bool) {
 	if err != nil || account.Disabled {
 		return User{}, false
 	}
+	settings, err := a.store.GetUserSettings(r.Context(), account.ID)
+	if err != nil {
+		return User{}, false
+	}
 	teams := make([]Team, 0, len(account.Teams))
 	for _, team := range account.Teams {
 		teams = append(teams, Team{ID: team.ID, Name: team.Name})
 	}
 	return User{
-		Subject: account.ID,
-		Email:   account.Email,
-		Name:    account.Name,
-		Roles:   account.Roles,
-		Teams:   teams,
-		IsAdmin: account.IsAdmin,
-		CSRF:    claims.CSRF,
-		Expires: claims.Expires,
+		Subject:            account.ID,
+		Email:              account.Email,
+		Name:               account.Name,
+		Roles:              account.Roles,
+		Teams:              teams,
+		IsAdmin:            account.IsAdmin,
+		HiddenResultFields: settings.HiddenResultFields,
+		CSRF:               claims.CSRF,
+		Expires:            claims.Expires,
 	}, true
 }
 
