@@ -95,9 +95,9 @@ Use [`charts/vesta/README.md`](charts/vesta/README.md) for secret creation, loca
 
 GitHub Actions configuration lives under [`.github/workflows`](.github/workflows):
 
-- `CI` checks workflow syntax, Go formatting/module integrity/vet/race tests/coverage, reachable Go vulnerabilities, web tests and production builds, strict Helm linting and render variants, chart packaging, Dockerfile checks, the pinned VictoriaLogs integration suite, and the final container UID.
+- `CI` checks workflow syntax, Go formatting/module integrity/vet/race tests/coverage, reachable Go vulnerabilities, web tests and production builds, strict Helm linting and render variants, chart packaging, Dockerfile checks, the pinned VictoriaLogs integration suite, the final container UID, and an end-to-end Kind deployment with VictoriaLogs and continuous fake logs.
 - `CodeQL` analyzes Go and TypeScript on `main`, pull requests, manual runs, and a weekly schedule.
-- `Publish container images` publishes AMD64 images as `ghcr.io/<owner>/<repository>-web` and `ghcr.io/<owner>/<repository>-api` from `master`, version tags, and manual runs. Version tags also produce semantic-version tags, while the default branch publishes `latest`.
+- `Publish container images` publishes multi-platform AMD64 and ARM64 images as `ghcr.io/<owner>/<repository>-web` and `ghcr.io/<owner>/<repository>-api` from `master`, version tags, and manual runs. Version tags also produce semantic-version tags, while the default branch publishes `latest`; a manual `release_tag` input can rebuild an existing version tag from its exact source revision.
 - `Publish Helm chart` is manually triggered and publishes the chart version declared in `charts/vesta/Chart.yaml` as `ghcr.io/<owner>/charts/vesta:<version>`.
 - [Dependabot](.github/dependabot.yml) groups weekly npm, Go module, Docker, and GitHub Actions updates.
 

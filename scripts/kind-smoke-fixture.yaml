@@ -1,0 +1,142 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: victorialogs
+  labels:
+    app.kubernetes.io/name: victorialogs
+    app.kubernetes.io/part-of: vesta-kind-smoke
+spec:
+  selector:
+    app.kubernetes.io/name: victorialogs
+  ports:
+    - name: http
+      port: 9428
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: victorialogs
+  labels:
+    app.kubernetes.io/name: victorialogs
+    app.kubernetes.io/part-of: vesta-kind-smoke
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: victorialogs
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: victorialogs
+        app.kubernetes.io/part-of: vesta-kind-smoke
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: victorialogs
+          image: victoriametrics/victoria-logs:v1.52.0@sha256:47b820890d64c4575a2a0a46415dcd8a4fd59a0f1fcd6a377693d7aea639442e
+          imagePullPolicy: IfNotPresent
+          args:
+            - -storageDataPath=/victoria-logs-data
+            - -retentionPeriod=1d
+          ports:
+            - name: http
+              containerPort: 9428
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /victoria-logs-data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-logs
+  labels:
+    app.kubernetes.io/name: fake-logs
+    app.kubernetes.io/part-of: vesta-kind-smoke
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fake-logs
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fake-logs
+        app.kubernetes.io/part-of: vesta-kind-smoke
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: fake-logs
+          image: curlimages/curl:8.14.1@sha256:9a1ed35addb45476afa911696297f8e115993df459278ed036182dd2cd22b67b
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - /opt/vesta/fake-logs.sh
+          env:
+            - name: LOG_INTERVAL_SECONDS
+              value: "1"
+            - name: VICTORIALOGS_URL
+              value: http://victorialogs:9428
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: script
+              mountPath: /opt/vesta/fake-logs.sh
+              subPath: fake-logs.sh
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: script
+          configMap:
+            name: fake-logs
+            defaultMode: 0444
+        - name: tmp
+          emptyDir: {}
