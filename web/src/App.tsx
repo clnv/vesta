@@ -126,7 +126,7 @@ export default function App() {
   const [activeId, setActiveId] = useState("");
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
   const [workspaceReady, setWorkspaceReady] = useState(false);
-  const [sidebarMode, setSidebarMode] = useState<"history" | "stars">("history");
+  const [sidebarMode, setSidebarMode] = useState<"history" | "stars">("stars");
   const [shareOpen, setShareOpen] = useState(false);
   const [shareParts, setShareParts] = useState<ShareParts>(DEFAULT_SHARE_PARTS);
   const [starOpen, setStarOpen] = useState(false);

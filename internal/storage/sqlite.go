@@ -160,8 +160,103 @@ func (s *Store) initialize(ctx context.Context, persistent bool) error {
 			return fmt.Errorf("initialize SQLite schema: %w", err)
 		}
 	}
+	if err := s.ensureQueryLibrarySchema(ctx); err != nil {
+		return err
+	}
 	if err := s.ensureSystemShareAudience(ctx); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (s *Store) ensureQueryLibrarySchema(ctx context.Context) error {
+	definitions := make(map[string]string, 2)
+	for _, table := range []string{"personal_queries", "team_queries"} {
+		var definition string
+		if err := s.db.QueryRowContext(
+			ctx,
+			"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+			table,
+		).Scan(&definition); err != nil {
+			return fmt.Errorf("inspect %s schema: %w", table, err)
+		}
+		definitions[table] = definition
+	}
+
+	migratePersonal := strings.Contains(definitions["personal_queries"], "tenant_account_id")
+	migrateTeam := strings.Contains(definitions["team_queries"], "tenant_account_id") ||
+		!strings.Contains(definitions["team_queries"], "'chart'")
+	if !migratePersonal && !migrateTeam {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin query library migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if migratePersonal {
+		for _, statement := range []string{
+			"ALTER TABLE personal_queries RENAME TO personal_queries_legacy",
+			`CREATE TABLE personal_queries (
+				id TEXT PRIMARY KEY,
+				user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+				title TEXT NOT NULL,
+				query TEXT NOT NULL,
+				source_id TEXT NOT NULL,
+				result_mode TEXT NOT NULL CHECK (result_mode IN ('table', 'json', 'chart')),
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL
+			) STRICT`,
+			`INSERT INTO personal_queries (
+				id, user_id, title, query, source_id, result_mode, created_at, updated_at
+			)
+			SELECT id, user_id, title, query, source_id, result_mode, created_at, updated_at
+			FROM personal_queries_legacy`,
+			"DROP TABLE personal_queries_legacy",
+			"CREATE INDEX personal_queries_user_idx ON personal_queries (user_id, updated_at DESC)",
+		} {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("migrate personal query schema: %w", err)
+			}
+		}
+	}
+
+	if migrateTeam {
+		for _, statement := range []string{
+			"ALTER TABLE team_queries RENAME TO team_queries_legacy",
+			`CREATE TABLE team_queries (
+				id TEXT PRIMARY KEY,
+				team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+				folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL,
+				title TEXT NOT NULL,
+				query TEXT NOT NULL,
+				source_id TEXT NOT NULL,
+				result_mode TEXT NOT NULL CHECK (result_mode IN ('table', 'json', 'chart')),
+				created_by TEXT NOT NULL REFERENCES users(id),
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL
+			) STRICT`,
+			`INSERT INTO team_queries (
+				id, team_id, folder_id, title, query, source_id, result_mode,
+				created_by, created_at, updated_at
+			)
+			SELECT
+				id, team_id, folder_id, title, query, source_id, result_mode,
+				created_by, created_at, updated_at
+			FROM team_queries_legacy`,
+			"DROP TABLE team_queries_legacy",
+			"CREATE INDEX team_queries_team_folder_idx ON team_queries (team_id, folder_id, updated_at DESC)",
+		} {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("migrate team query schema: %w", err)
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit query library migration: %w", err)
 	}
 	return nil
 }
