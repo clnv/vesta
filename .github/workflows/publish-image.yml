@@ -27,8 +27,8 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.component }} (${{ matrix.platform }})
-    runs-on: ubuntu-24.04
+    name: Build ${{ matrix.component }} (${{ matrix.platform.target }})
+    runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -37,8 +37,10 @@ jobs:
           - api
           - web
         platform:
-          - linux/amd64
-          - linux/arm64
+          - target: linux/amd64
+            runner: ubuntu-24.04
+          - target: linux/arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Validate release tag
         if: inputs.release_tag != ''
@@ -60,14 +62,8 @@ jobs:
         id: platform
         shell: bash
         env:
-          PLATFORM: ${{ matrix.platform }}
+          PLATFORM: ${{ matrix.platform.target }}
         run: echo "slug=${PLATFORM//\//-}" >> "$GITHUB_OUTPUT"
-
-      - name: Set up QEMU
-        if: matrix.platform == 'linux/arm64'
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
-        with:
-          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
@@ -104,7 +100,7 @@ jobs:
         with:
           context: .
           file: ${{ matrix.component }}.Dockerfile
-          platforms: ${{ matrix.platform }}
+          platforms: ${{ matrix.platform.target }}
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.component }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.component }}-${{ steps.platform.outputs.slug }}
