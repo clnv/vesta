@@ -4,10 +4,9 @@ This chart deploys `vesta-web` and `vesta-api` as two containers in one Pod. The
 
 ## Local install
 
-Build both images and install the chart with its development-only local-account defaults:
+Install the published images with the chart's development-only local-account defaults:
 
 ```sh
-just docker
 helm upgrade --install vesta ./charts/vesta --namespace vesta --create-namespace
 kubectl -n vesta port-forward service/vesta 8080:80
 ```
@@ -16,9 +15,11 @@ The default source is `http://victorialogs:9428`. Override `config.data.sources`
 
 After port-forwarding, sign in as `admin@localhost` with `vesta-local-password`. These values are intentionally local-only; replace the chart-managed Secret or use an existing Secret anywhere else.
 
+To test locally built images instead, run `just docker` and override both repositories and tags with `vesta-api:local` and `vesta-web:local`.
+
 ## Production install
 
-Copy `values-production.example.yaml`, replace the image, ingress, bootstrap account, source, upstream routing, and role settings, then create the referenced Secret:
+Copy `values-production.example.yaml`, replace the ingress, bootstrap account, source, upstream routing, and role settings, then create the referenced Secret:
 
 ```sh
 kubectl -n vesta create secret generic vesta-secrets \
@@ -46,8 +47,8 @@ Set `persistence.storageClass` to select a StorageClass, or set `persistence.exi
 
 | Value | Default | Purpose |
 | --- | --- | --- |
-| `api.image.repository`, `api.image.tag` | `vesta-api:local` | API container image |
-| `web.image.repository`, `web.image.tag` | `vesta-web:local` | Web gateway image |
+| `api.image.repository`, `api.image.tag` | `ghcr.io/clnv/vesta-api:0.0.1` | API container image |
+| `web.image.repository`, `web.image.tag` | `ghcr.io/clnv/vesta-web:0.0.1` | Web gateway image |
 | `api.resources`, `web.resources` | component defaults | Per-container requests and limits |
 | `config.data` | development config | Complete Vesta YAML configuration |
 | `config.existingConfigMap` | empty | Use a pre-existing `config.yml` ConfigMap |

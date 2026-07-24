@@ -159,14 +159,14 @@ jobs:
           retention-days: 14
 
   integration:
-    name: Container and VictoriaLogs integration
+    name: Container, VictoriaLogs, and Kind integration
     needs:
       - workflow-lint
       - api
       - web
       - helm
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -191,3 +191,19 @@ jobs:
               exit 1
             fi
           done
+      - name: Set up Helm
+        uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.3
+      - name: Create Kind cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          version: v0.32.0
+          kubectl_version: v1.36.1
+          cluster_name: vesta-ci
+          node_image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+          wait: 120s
+      - name: Run Helm chart smoke test in Kind
+        env:
+          KIND_CLUSTER_NAME: vesta-ci
+        run: ./scripts/kind-smoke-test.sh

@@ -2,9 +2,9 @@ replicaCount: 1
 
 api:
   image:
-    repository: vesta-api
+    repository: ghcr.io/clnv/vesta-api
     pullPolicy: IfNotPresent
-    tag: local
+    tag: "0.0.1"
   resources:
     requests:
       cpu: 100m
@@ -37,9 +37,9 @@ api:
 
 web:
   image:
-    repository: vesta-web
+    repository: ghcr.io/clnv/vesta-web
     pullPolicy: IfNotPresent
-    tag: local
+    tag: "0.0.1"
   resources:
     requests:
       cpu: 25m

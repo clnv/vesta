@@ -2,14 +2,14 @@ replicaCount: 1
 
 api:
   image:
-    repository: ghcr.io/your-organization/vesta-api
-    tag: "0.1.0"
+    repository: ghcr.io/clnv/vesta-api
+    tag: "0.0.1"
     pullPolicy: IfNotPresent
 
 web:
   image:
-    repository: ghcr.io/your-organization/vesta-web
-    tag: "0.1.0"
+    repository: ghcr.io/clnv/vesta-web
+    tag: "0.0.1"
     pullPolicy: IfNotPresent
 
 config:
