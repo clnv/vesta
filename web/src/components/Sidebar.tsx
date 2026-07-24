@@ -1,21 +1,23 @@
-import { Check, Clock3, Eraser, Folder, Pencil, Plus, Star, X } from "lucide-react";
+import { Check, Clock3, Eraser, Folder, LockKeyhole, Pencil, Plus, Star, X } from "lucide-react";
 import { useState } from "react";
-import type { HistoryEntry, TeamFolder, TeamLibrary, TeamQuery } from "../types";
+import type { HistoryEntry, PersonalQuery, StarQuery, TeamFolder, TeamLibrary, TeamQuery } from "../types";
 
 interface Props {
   mode: "history" | "stars";
   onMode(mode: "history" | "stars"): void;
   history: HistoryEntry[];
+  personalQueries: PersonalQuery[];
   teamLibraries: TeamLibrary[];
   onRecall(entry: HistoryEntry): void;
-  onOpenTeamStar(entry: TeamQuery): void;
+  onOpenStar(entry: StarQuery): void;
+  onEditPersonalStar(entry: PersonalQuery, title: string): Promise<boolean>;
   onEditTeamStar(entry: TeamQuery, title: string, folderId: string): Promise<boolean>;
   onCreateFolder(teamId: string): void;
   onClearHistory(): void;
 }
 
 export function Sidebar(props: Props) {
-  const starCount = props.teamLibraries.reduce(
+  const starCount = props.personalQueries.length + props.teamLibraries.reduce(
     (total, library) => total + library.queries.length + library.folders.reduce((folderTotal, folder) => folderTotal + folder.queries.length, 0),
     0,
   );
@@ -57,11 +59,13 @@ export function Sidebar(props: Props) {
             {props.history.length === 0 && <div className="sidebar-note"><Clock3 size={20} /><span><strong>No query history yet</strong>Executed query text will appear here. Result rows are never stored.</span></div>}
             {props.history.map((entry) => (
               <button className="history-item" key={entry.id} onClick={() => props.onRecall(entry)}>
-                <code>{entry.query}</code>
+                <code title={entry.query}>{formatQueryPreview(entry.query)}</code>
                 <span className="history-meta">
                   <time dateTime={new Date(entry.executedAt).toISOString()}>{formatHistoryTime(entry.executedAt)}</time>
-                  <span className={`history-status ${entry.status}`}><i />{entry.status}</span>
-                  {entry.elapsedMs !== undefined && <span>{formatElapsedTime(entry.elapsedMs)}</span>}
+                  <span className="history-outcome">
+                    <span className={`history-status ${entry.status}`}><i aria-hidden="true" />{entry.status}</span>
+                    {entry.elapsedMs !== undefined && <span className="history-duration">{formatElapsedTime(entry.elapsedMs)}</span>}
+                  </span>
                 </span>
               </button>
             ))}
@@ -71,15 +75,37 @@ export function Sidebar(props: Props) {
         <section className="sidebar-panel" id="sidebar-stars">
           <div className="sidebar-title-row">
             <div className="sidebar-heading">
-              <span className="eyebrow">TEAM LIBRARY</span>
+              <span className="eyebrow">SAVED LIBRARY</span>
               <div className="sidebar-heading-line">
-                <h2>Team stars</h2>
+                <h2>Starred queries</h2>
                 <span className="sidebar-count" aria-label={`${starCount} starred queries`}>{starCount}</span>
               </div>
-              <p>Open, rename, and organize shared queries.</p>
+              <p>Keep queries private or share them with a team.</p>
             </div>
           </div>
           <div className="team-library-list">
+            <section className="team-library personal-library">
+              <header>
+                <span className="team-identity">
+                  <i aria-hidden="true"><LockKeyhole size={14} /></i>
+                  <span className="library-name"><strong>My stars</strong><small>Private to you</small></span>
+                </span>
+              </header>
+              {props.personalQueries.length === 0 ? (
+                <div className="sidebar-note compact"><Star size={18} /><span><strong>No private stars yet</strong>Star a query for yourself to keep it private.</span></div>
+              ) : (
+                <div className="team-query-group">
+                  {props.personalQueries.map((item) => (
+                    <StarItem
+                      item={item}
+                      onOpen={props.onOpenStar}
+                      onEdit={(title) => props.onEditPersonalStar(item, title)}
+                      key={item.id}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
             {props.teamLibraries.length === 0 && <div className="sidebar-note"><Star size={20} /><span><strong>No team stars yet</strong>Join a team to star and reuse queries.</span></div>}
             {props.teamLibraries.map((library) => (
               <section className="team-library" key={library.team.id}>
@@ -91,11 +117,11 @@ export function Sidebar(props: Props) {
                   <div className="team-query-group">
                     <span className="team-group-label">Unfiled</span>
                     {library.queries.map((item) => (
-                      <TeamStarItem
+                      <StarItem
                         item={item}
                         folders={library.folders}
-                        onOpen={props.onOpenTeamStar}
-                        onEdit={props.onEditTeamStar}
+                        onOpen={props.onOpenStar}
+                        onEdit={(title, folderId) => props.onEditTeamStar(item, title, folderId)}
                         key={item.id}
                       />
                     ))}
@@ -106,11 +132,11 @@ export function Sidebar(props: Props) {
                     <span><Folder size={15} /> {folder.name}<small>{folder.queries.length}</small></span>
                     {folder.queries.length === 0 && <small>Empty folder</small>}
                     {folder.queries.map((item) => (
-                      <TeamStarItem
+                      <StarItem
                         item={item}
                         folders={library.folders}
-                        onOpen={props.onOpenTeamStar}
-                        onEdit={props.onEditTeamStar}
+                        onOpen={props.onOpenStar}
+                        onEdit={(title, folderId) => props.onEditTeamStar(item, title, folderId)}
                         key={item.id}
                       />
                     ))}
@@ -125,25 +151,25 @@ export function Sidebar(props: Props) {
   );
 }
 
-function TeamStarItem({
+function StarItem({
   item,
   folders,
   onOpen,
   onEdit,
 }: {
-  item: TeamQuery;
-  folders: TeamFolder[];
-  onOpen(item: TeamQuery): void;
-  onEdit(item: TeamQuery, title: string, folderId: string): Promise<boolean>;
+  item: StarQuery;
+  folders?: TeamFolder[];
+  onOpen(item: StarQuery): void;
+  onEdit(title: string, folderId: string): Promise<boolean>;
 }) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(item.title);
-  const [folderId, setFolderId] = useState(item.folderId ?? "");
+  const [folderId, setFolderId] = useState((item as Partial<TeamQuery>).folderId ?? "");
   const [saving, setSaving] = useState(false);
 
   const beginEditing = () => {
     setTitle(item.title);
-    setFolderId(item.folderId ?? "");
+    setFolderId((item as Partial<TeamQuery>).folderId ?? "");
     setEditing(true);
   };
 
@@ -153,17 +179,17 @@ function TeamStarItem({
         event.preventDefault();
         if (!title.trim() || saving) return;
         setSaving(true);
-        void onEdit(item, title.trim(), folderId)
+        void onEdit(title.trim(), folderId)
           .then((updated) => {
             if (updated) setEditing(false);
           })
           .finally(() => setSaving(false));
       }}>
         <label><span>Name</span><input aria-label="Star name" autoFocus maxLength={256} required value={title} onChange={(event) => setTitle(event.target.value)} /></label>
-        <label><span>Folder</span><select aria-label="Star folder" value={folderId} onChange={(event) => setFolderId(event.target.value)}>
+        {folders && <label><span>Folder</span><select aria-label="Star folder" value={folderId} onChange={(event) => setFolderId(event.target.value)}>
           <option value="">Unfiled</option>
           {folders.map((folder) => <option value={folder.id} key={folder.id}>{folder.name}</option>)}
-        </select></label>
+        </select></label>}
         <div className="team-star-editor-actions">
           <button type="button" title="Cancel" aria-label="Cancel editing star" disabled={saving} onClick={() => setEditing(false)}><X size={16} /></button>
           <button type="submit" title="Save changes" aria-label="Save star" disabled={saving || !title.trim()}><Check size={16} /></button>
@@ -195,4 +221,8 @@ function formatHistoryTime(executedAt: number) {
 
 function formatElapsedTime(elapsedMs: number) {
   return elapsedMs >= 1_000 ? `${(elapsedMs / 1_000).toFixed(1)}s` : `${elapsedMs}ms`;
+}
+
+function formatQueryPreview(query: string) {
+  return query.trim().replace(/\s+/g, " ");
 }

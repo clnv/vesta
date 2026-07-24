@@ -25,7 +25,6 @@ func NewClient() *Client {
 
 type Request struct {
 	Source   config.SourceConfig
-	Tenant   config.Tenant
 	Endpoint string
 	Query    string
 	Field    string
@@ -41,7 +40,7 @@ func (c *Client) Do(ctx context.Context, input Request) (*http.Response, error) 
 		form.Set("hidden_fields_filters", string(patterns))
 	}
 	switch input.Endpoint {
-	case "/select/logsql/query", "/select/logsql/tail", "/select/logsql/field_names":
+	case "/select/logsql/query", "/select/logsql/field_names":
 	case "/select/logsql/field_values":
 		if input.Field == "" {
 			return nil, fmt.Errorf("field is required")
@@ -58,8 +57,10 @@ func (c *Client) Do(ctx context.Context, input Request) (*http.Response, error) 
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json, application/x-ndjson")
-	req.Header.Set("AccountID", input.Tenant.AccountID)
-	req.Header.Set("ProjectID", input.Tenant.ProjectID)
+	if input.Source.AccountID != "" {
+		req.Header.Set("AccountID", input.Source.AccountID)
+		req.Header.Set("ProjectID", input.Source.ProjectID)
+	}
 	username, password, token := input.Source.Credentials()
 	switch input.Source.Auth.Type {
 	case "basic":

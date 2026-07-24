@@ -18,19 +18,16 @@ type Folder struct {
 }
 
 type TeamQuery struct {
-	ID              string    `json:"id"`
-	TeamID          string    `json:"teamId"`
-	FolderID        string    `json:"folderId,omitempty"`
-	Title           string    `json:"title"`
-	Query           string    `json:"query"`
-	SourceID        string    `json:"sourceId"`
-	TenantAccountID string    `json:"tenantAccountId"`
-	TenantProjectID string    `json:"tenantProjectId"`
-	TenantName      string    `json:"tenantName"`
-	ResultMode      string    `json:"resultMode"`
-	CreatedBy       string    `json:"createdBy"`
-	CreatedAt       time.Time `json:"createdAt"`
-	UpdatedAt       time.Time `json:"updatedAt"`
+	ID         string    `json:"id"`
+	TeamID     string    `json:"teamId"`
+	FolderID   string    `json:"folderId,omitempty"`
+	Title      string    `json:"title"`
+	Query      string    `json:"query"`
+	SourceID   string    `json:"sourceId"`
+	ResultMode string    `json:"resultMode"`
+	CreatedBy  string    `json:"createdBy"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
 }
 
 type TeamLibrary struct {
@@ -39,17 +36,39 @@ type TeamLibrary struct {
 	Queries []TeamQuery `json:"queries"`
 }
 
+type PersonalQuery struct {
+	ID         string    `json:"id"`
+	UserID     string    `json:"-"`
+	Title      string    `json:"title"`
+	Query      string    `json:"query"`
+	SourceID   string    `json:"sourceId"`
+	ResultMode string    `json:"resultMode"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+}
+
+type CreatePersonalQueryInput struct {
+	UserID     string
+	Title      string
+	Query      string
+	SourceID   string
+	ResultMode string
+}
+
+type UpdatePersonalQueryInput struct {
+	ID     string
+	UserID string
+	Title  string
+}
+
 type CreateTeamQueryInput struct {
-	TeamID          string
-	FolderID        string
-	Title           string
-	Query           string
-	SourceID        string
-	TenantAccountID string
-	TenantProjectID string
-	TenantName      string
-	ResultMode      string
-	CreatedBy       string
+	TeamID     string
+	FolderID   string
+	Title      string
+	Query      string
+	SourceID   string
+	ResultMode string
+	CreatedBy  string
 }
 
 type UpdateTeamQueryInput struct {
@@ -57,6 +76,151 @@ type UpdateTeamQueryInput struct {
 	FolderID string
 	Title    string
 	UserID   string
+}
+
+func (s *Store) CreatePersonalQuery(ctx context.Context, input CreatePersonalQueryInput) (PersonalQuery, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Query = strings.TrimSpace(input.Query)
+	if input.UserID == "" || input.Title == "" || len(input.Title) > 256 || input.Query == "" || len(input.Query) > 32<<10 {
+		return PersonalQuery{}, errors.New("query title or text is invalid")
+	}
+	if input.SourceID == "" {
+		return PersonalQuery{}, errors.New("query source is required")
+	}
+	if input.ResultMode != "table" && input.ResultMode != "json" && input.ResultMode != "chart" {
+		return PersonalQuery{}, errors.New("query result mode is invalid")
+	}
+	id, err := randomID()
+	if err != nil {
+		return PersonalQuery{}, err
+	}
+	now := time.Now()
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO personal_queries (
+			id, user_id, title, query, source_id, result_mode,
+			created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, input.UserID, input.Title, input.Query, input.SourceID,
+		input.ResultMode, now.Unix(), now.Unix(),
+	)
+	if err != nil {
+		return PersonalQuery{}, fmt.Errorf("create personal query: %w", err)
+	}
+	return PersonalQuery{
+		ID: id, UserID: input.UserID, Title: input.Title, Query: input.Query, SourceID: input.SourceID,
+		ResultMode: input.ResultMode, CreatedAt: now, UpdatedAt: now,
+	}, nil
+}
+
+func (s *Store) UpdatePersonalQuery(ctx context.Context, input UpdatePersonalQueryInput) (PersonalQuery, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	if input.ID == "" || input.UserID == "" || input.Title == "" || len(input.Title) > 256 {
+		return PersonalQuery{}, errors.New("star name is required and must not exceed 256 characters")
+	}
+	now := time.Now()
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE personal_queries
+		SET title = ?, updated_at = ?
+		WHERE id = ? AND user_id = ?`,
+		input.Title, now.Unix(), input.ID, input.UserID,
+	)
+	if err != nil {
+		return PersonalQuery{}, fmt.Errorf("update personal query: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return PersonalQuery{}, fmt.Errorf("check updated personal query: %w", err)
+	}
+	if affected == 0 {
+		return PersonalQuery{}, ErrNotFound
+	}
+	item, err := s.personalQuery(ctx, input.ID, input.UserID)
+	if err != nil {
+		return PersonalQuery{}, err
+	}
+	return item, nil
+}
+
+func (s *Store) DeletePersonalQuery(ctx context.Context, id, userID string) error {
+	result, err := s.db.ExecContext(ctx, "DELETE FROM personal_queries WHERE id = ? AND user_id = ?", id, userID)
+	if err != nil {
+		return fmt.Errorf("delete personal query: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check deleted personal query: %w", err)
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) ListPersonalQueries(ctx context.Context, userID string) ([]PersonalQuery, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			id, user_id, title, query, source_id, result_mode,
+			created_at, updated_at
+		FROM personal_queries
+		WHERE user_id = ?
+		ORDER BY updated_at DESC`,
+		userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list personal queries: %w", err)
+	}
+	defer rows.Close()
+	items := []PersonalQuery{}
+	for rows.Next() {
+		item, err := scanPersonalQuery(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan personal query: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate personal queries: %w", err)
+	}
+	return items, nil
+}
+
+func (s *Store) personalQuery(ctx context.Context, id, userID string) (PersonalQuery, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT
+			id, user_id, title, query, source_id, result_mode,
+			created_at, updated_at
+		FROM personal_queries
+		WHERE id = ? AND user_id = ?`,
+		id, userID,
+	)
+	item, err := scanPersonalQuery(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PersonalQuery{}, ErrNotFound
+	}
+	if err != nil {
+		return PersonalQuery{}, fmt.Errorf("load personal query: %w", err)
+	}
+	return item, nil
+}
+
+type personalQueryScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanPersonalQuery(row personalQueryScanner) (PersonalQuery, error) {
+	var item PersonalQuery
+	var createdAt int64
+	var updatedAt int64
+	err := row.Scan(
+		&item.ID, &item.UserID, &item.Title, &item.Query, &item.SourceID,
+		&item.ResultMode, &createdAt, &updatedAt,
+	)
+	if err != nil {
+		return PersonalQuery{}, err
+	}
+	item.CreatedAt = time.Unix(createdAt, 0)
+	item.UpdatedAt = time.Unix(updatedAt, 0)
+	return item, nil
 }
 
 func (s *Store) CreateFolder(ctx context.Context, teamID, name, createdBy string) (Folder, error) {
@@ -95,8 +259,8 @@ func (s *Store) CreateTeamQuery(ctx context.Context, input CreateTeamQueryInput)
 	if input.Title == "" || len(input.Title) > 256 || input.Query == "" || len(input.Query) > 32<<10 {
 		return TeamQuery{}, errors.New("query title or text is invalid")
 	}
-	if input.SourceID == "" || input.TenantAccountID == "" || input.TenantProjectID == "" {
-		return TeamQuery{}, errors.New("query source and tenant are required")
+	if input.SourceID == "" {
+		return TeamQuery{}, errors.New("query source is required")
 	}
 	if input.ResultMode != "table" && input.ResultMode != "json" && input.ResultMode != "chart" {
 		return TeamQuery{}, errors.New("query result mode is invalid")
@@ -120,21 +284,18 @@ func (s *Store) CreateTeamQuery(ctx context.Context, input CreateTeamQueryInput)
 	now := time.Now()
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO team_queries (
-			id, team_id, folder_id, title, query, source_id,
-			tenant_account_id, tenant_project_id, tenant_name, result_mode,
+			id, team_id, folder_id, title, query, source_id, result_mode,
 			created_by, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, input.TeamID, folder, input.Title, input.Query, input.SourceID,
-		input.TenantAccountID, input.TenantProjectID, input.TenantName, input.ResultMode,
-		input.CreatedBy, now.Unix(), now.Unix(),
+		input.ResultMode, input.CreatedBy, now.Unix(), now.Unix(),
 	)
 	if err != nil {
 		return TeamQuery{}, fmt.Errorf("create team query: %w", err)
 	}
 	return TeamQuery{
 		ID: id, TeamID: input.TeamID, FolderID: input.FolderID, Title: input.Title, Query: input.Query,
-		SourceID: input.SourceID, TenantAccountID: input.TenantAccountID, TenantProjectID: input.TenantProjectID,
-		TenantName: input.TenantName, ResultMode: input.ResultMode, CreatedBy: input.CreatedBy,
+		SourceID: input.SourceID, ResultMode: input.ResultMode, CreatedBy: input.CreatedBy,
 		CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
@@ -155,7 +316,6 @@ func (s *Store) UpdateTeamQuery(ctx context.Context, input UpdateTeamQueryInput)
 		SELECT
 			team_queries.id, team_queries.team_id, coalesce(team_queries.folder_id, ''),
 			team_queries.title, team_queries.query, team_queries.source_id,
-			team_queries.tenant_account_id, team_queries.tenant_project_id, team_queries.tenant_name,
 			team_queries.result_mode, team_queries.created_by, team_queries.created_at, team_queries.updated_at
 		FROM team_queries
 		JOIN team_members ON team_members.team_id = team_queries.team_id
@@ -167,7 +327,6 @@ func (s *Store) UpdateTeamQuery(ctx context.Context, input UpdateTeamQueryInput)
 	var updatedAt int64
 	if err := tx.QueryRowContext(ctx, query, args...).Scan(
 		&item.ID, &item.TeamID, &item.FolderID, &item.Title, &item.Query, &item.SourceID,
-		&item.TenantAccountID, &item.TenantProjectID, &item.TenantName,
 		&item.ResultMode, &item.CreatedBy, &createdAt, &updatedAt,
 	); errors.Is(err, sql.ErrNoRows) {
 		return TeamQuery{}, ErrNotFound
@@ -286,7 +445,6 @@ func (s *Store) ListTeamLibraries(ctx context.Context, userID string) ([]TeamLib
 		SELECT
 			team_queries.id, team_queries.team_id, coalesce(team_queries.folder_id, ''),
 			team_queries.title, team_queries.query, team_queries.source_id,
-			team_queries.tenant_account_id, team_queries.tenant_project_id, team_queries.tenant_name,
 			team_queries.result_mode, team_queries.created_by, team_queries.created_at, team_queries.updated_at
 		FROM team_queries
 		JOIN team_members ON team_members.team_id = team_queries.team_id
@@ -304,7 +462,6 @@ func (s *Store) ListTeamLibraries(ctx context.Context, userID string) ([]TeamLib
 		var updatedAt int64
 		if err := queryRows.Scan(
 			&item.ID, &item.TeamID, &item.FolderID, &item.Title, &item.Query, &item.SourceID,
-			&item.TenantAccountID, &item.TenantProjectID, &item.TenantName,
 			&item.ResultMode, &item.CreatedBy, &createdAt, &updatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan team query: %w", err)

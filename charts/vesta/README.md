@@ -18,7 +18,7 @@ After port-forwarding, sign in as `admin@localhost` with `vesta-local-password`.
 
 ## Production install
 
-Copy `values-production.example.yaml`, replace the image, ingress, bootstrap account, source, tenant, and role settings, then create the referenced Secret:
+Copy `values-production.example.yaml`, replace the image, ingress, bootstrap account, source, upstream routing, and role settings, then create the referenced Secret:
 
 ```sh
 kubectl -n vesta create secret generic vesta-secrets \
@@ -38,7 +38,7 @@ When `config.existingConfigMap` is set, it must contain a `config.yml` key. The 
 
 ## SQLite persistence
 
-Users, bcrypt password hashes, teams, memberships, query folders, saved team queries, and private share records are stored in SQLite at `config.data.storage.path`, which defaults to `/var/lib/vesta/vesta.db`. Persistence is enabled by default: the chart creates a PVC and mounts it only in the API container. The Pod security context sets `fsGroup: 65532` so the non-root API process can write the volume.
+Users, bcrypt password hashes, teams, memberships, query folders, saved queries, and expiring share-link records are stored in SQLite at `config.data.storage.path`, which defaults to `/var/lib/vesta/vesta.db`. Persistence is enabled by default: the chart creates a PVC and mounts it only in the API container. The Pod security context sets `fsGroup: 65532` so the non-root API process can write the volume.
 
 Set `persistence.storageClass` to select a StorageClass, or set `persistence.existingClaim` to reuse a PVC. The chart always requires `replicaCount: 1` and rejects autoscaling because accounts and memberships are local SQLite state. When persistence is enabled, it also uses the `Recreate` deployment strategy so only one API process can access the database. Set `persistence.enabled: false` only for disposable testing with an ephemeral `emptyDir`.
 

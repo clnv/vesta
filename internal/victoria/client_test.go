@@ -21,8 +21,7 @@ func TestFieldValuesUsesOnlyQueryScopedMetadataParameters(t *testing.T) {
 	defer server.Close()
 	client := NewClient()
 	response, err := client.Do(context.Background(), Request{
-		Source:   config.SourceConfig{URL: server.URL},
-		Tenant:   config.Tenant{AccountID: "0", ProjectID: "0"},
+		Source:   config.SourceConfig{URL: server.URL, AccountID: "0", ProjectID: "0"},
 		Endpoint: "/select/logsql/field_values", Query: "_time:1h", Field: "host",
 	})
 	if err != nil {

@@ -4,14 +4,9 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 compose="docker compose -f $root/compose.yml"
 query_time='_time:1h'
-tail_pid=''
 cookie_file=$(mktemp)
 
 cleanup() {
-  if [ -n "$tail_pid" ]; then
-    kill "$tail_pid" 2>/dev/null || true
-    wait "$tail_pid" 2>/dev/null || true
-  fi
   rm -f "$cookie_file"
   $compose down -v
 }
@@ -64,15 +59,19 @@ if [ -z "$csrf" ] || [ -z "$team_id" ]; then
   echo 'authenticated session did not include CSRF token and bootstrap team' >&2
   exit 1
 fi
-echo "$session" | grep -q '"accountId":"12"'
-echo "$session" | grep -q '"accountId":"56"'
+echo "$session" | grep -q '"id":"payments"'
+echo "$session" | grep -q '"id":"search"'
+if echo "$session" | grep -q '"accountId"'; then
+  echo 'source routing configuration leaked in session response' >&2
+  exit 1
+fi
 if echo "$session" | grep -q 'victorialogs:9428'; then
   echo 'upstream URL leaked in session response' >&2
   exit 1
 fi
 
 share=$(curl -fsS -b "$cookie_file" -X POST -H 'Content-Type: application/json' -H "X-CSRF-Token: $csrf" \
-  --data "{\"payload\":{\"query\":\"_time:1h service:=payments-api\",\"sourceId\":\"integration\",\"tenant\":{\"accountId\":\"12\",\"projectId\":\"34\",\"name\":\"payments\"},\"title\":\"Payments\",\"resultMode\":\"table\"},\"audience\":{\"type\":\"team\",\"value\":\"$team_id\"}}" \
+  --data '{"payload":{"query":"_time:1h service:=payments-api","sourceId":"payments","title":"Payments","resultMode":"table"}}' \
   http://localhost:18080/api/v1/shares)
 share_token=$(echo "$share" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
 if [ -z "$share_token" ]; then
@@ -89,7 +88,7 @@ if [ -z "$folder_id" ]; then
   exit 1
 fi
 curl -fsS -b "$cookie_file" -X POST -H 'Content-Type: application/json' -H "X-CSRF-Token: $csrf" \
-  --data "{\"teamId\":\"$team_id\",\"folderId\":\"$folder_id\",\"payload\":{\"query\":\"_time:1h service:=payments-api\",\"sourceId\":\"integration\",\"tenant\":{\"accountId\":\"12\",\"projectId\":\"34\",\"name\":\"payments\"},\"title\":\"Payment incidents\",\"resultMode\":\"table\"}}" \
+  --data "{\"teamId\":\"$team_id\",\"folderId\":\"$folder_id\",\"payload\":{\"query\":\"_time:1h service:=payments-api\",\"sourceId\":\"payments\",\"title\":\"Payment incidents\",\"resultMode\":\"table\"}}" \
   http://localhost:18080/api/v1/team-queries | grep -q '"title":"Payment incidents"'
 
 $compose restart vesta-api
@@ -111,7 +110,7 @@ echo "$team_library" | grep -q '"name":"Incidents"'
 echo "$team_library" | grep -q '"title":"Payment incidents"'
 
 rows=$(curl -fsS -b "$cookie_file" -X POST -H 'Content-Type: application/json' -H "X-CSRF-Token: $csrf" \
-  --data '{"sourceId":"integration","tenant":{"accountId":"12","projectId":"34"},"query":"_time:1h service:=payments-api | sort by (_time) desc | limit 20"}' \
+  --data '{"sourceId":"payments","query":"_time:1h service:=payments-api | sort by (_time) desc | limit 20"}' \
   http://localhost:18080/api/v1/query)
 echo "$rows" | grep -q '"type":"meta"'
 echo "$rows" | grep -q 'checkout failed'
@@ -122,21 +121,21 @@ if echo "$rows" | grep -q 'must-not-leak'; then
 fi
 
 stats=$(curl -fsS -b "$cookie_file" -X POST -H 'Content-Type: application/json' -H "X-CSRF-Token: $csrf" \
-  --data '{"sourceId":"integration","tenant":{"accountId":"12","projectId":"34"},"query":"_time:1h | stats by (level) count()"}' \
+  --data '{"sourceId":"payments","query":"_time:1h | stats by (level) count()"}' \
   http://localhost:18080/api/v1/query)
 echo "$stats" | grep -q 'count'
 
 search=$(curl -fsS -b "$cookie_file" -X POST -H 'Content-Type: application/json' -H "X-CSRF-Token: $csrf" \
-  --data '{"sourceId":"integration","tenant":{"accountId":"56","projectId":"78"},"query":"_time:1h service:=search-api | limit 20"}' \
+  --data '{"sourceId":"search","query":"_time:1h service:=search-api | limit 20"}' \
   http://localhost:18080/api/v1/query)
 echo "$search" | grep -q 'index refreshed'
 if echo "$search" | grep -q 'checkout'; then
-  echo 'tenant data leaked across contexts' >&2
+  echo 'source routing leaked data across contexts' >&2
   exit 1
 fi
 
 fields=$(curl -fsS -b "$cookie_file" -X POST -H 'Content-Type: application/json' -H "X-CSRF-Token: $csrf" \
-  --data '{"sourceId":"integration","tenant":{"accountId":"12","projectId":"34"},"query":"_time:1h"}' \
+  --data '{"sourceId":"payments","query":"_time:1h"}' \
   http://localhost:18080/api/v1/fields)
 echo "$fields" | grep -q 'service'
 if echo "$fields" | grep -q 'password_hash'; then
@@ -144,28 +143,4 @@ if echo "$fields" | grep -q 'password_hash'; then
   exit 1
 fi
 
-tail_file=$(mktemp)
-curl -fsS -N -b "$cookie_file" -X POST -H 'Content-Type: application/json' -H "X-CSRF-Token: $csrf" \
-  --data '{"sourceId":"integration","tenant":{"accountId":"12","projectId":"34"},"query":"_time:1h service:=tail-probe"}' \
-  http://localhost:18080/api/v1/tail >"$tail_file" &
-tail_pid=$!
-sleep 1
-curl -fsS -X POST \
-  -H 'Content-Type: application/stream+json' -H 'AccountID: 12' -H 'ProjectID: 34' \
-  --data-binary '{"_time":"0","_msg":"live event","service":"tail-probe","level":"info"}' \
-  http://localhost:19428/insert/jsonline
-attempt=0
-until grep -q 'live event' "$tail_file"; do
-  attempt=$((attempt + 1))
-  if [ "$attempt" -ge 30 ]; then
-    echo 'live tail did not receive the seeded event' >&2
-    exit 1
-  fi
-  sleep 1
-done
-
-kill "$tail_pid" 2>/dev/null || true
-wait "$tail_pid" 2>/dev/null || true
-tail_pid=''
-rm -f "$tail_file"
 echo 'VictoriaLogs integration test passed'

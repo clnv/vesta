@@ -26,7 +26,7 @@ const session: Session = {
   },
   sources: [],
   csrfToken: "csrf-token",
-  limits: { queryTimeoutMs: 30_000, maxRows: 50_000, maxBytes: 32 << 20, maxQueries: 4, maxTails: 2 },
+  limits: { queryTimeoutMs: 30_000, maxRows: 50_000, maxBytes: 32 << 20, maxQueries: 4 },
 };
 
 const directory: Directory = {
@@ -55,12 +55,11 @@ const directory: Directory = {
 };
 
 const catalog: PermissionCatalog = {
-  roles: ["reader", "tenant-reader"],
+  roles: ["reader", "source-reader"],
   sources: [{
     id: "prod",
     name: "Production",
     roles: ["reader"],
-    tenants: [{ accountId: "12", projectId: "34", name: "payments", roles: ["tenant-reader"] }],
   }],
 };
 
@@ -104,16 +103,15 @@ it("loads the directory and explains configured permission grants", async () => 
 
   expect(screen.getByRole("heading", { name: "Permissions" })).toBeInTheDocument();
   expect(screen.getByText("Production")).toBeInTheDocument();
-  expect(screen.getByText("payments")).toBeInTheDocument();
-  expect(screen.getByText("2", { selector: ".audit-number" })).toBeInTheDocument();
+  expect(screen.getByText("1", { selector: ".audit-number" })).toBeInTheDocument();
 });
 
-it("treats null tenant roles from older servers as no additional role requirement", async () => {
+it("treats a source without roles as default deny", async () => {
   api.getPermissionCatalog.mockResolvedValue({
     ...catalog,
     sources: [{
       ...catalog.sources[0],
-      tenants: [{ ...catalog.sources[0].tenants[0], roles: null }],
+      roles: [],
     }],
   });
 
@@ -128,7 +126,7 @@ it("saves profile, roles, and memberships transactionally", async () => {
 
   const name = await screen.findByDisplayValue("Ada Admin");
   fireEvent.change(name, { target: { value: "Ada Lovelace" } });
-  fireEvent.click(screen.getByLabelText("tenant-reader"));
+  fireEvent.click(screen.getByLabelText("source-reader"));
   fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
 
   await waitFor(() => expect(api.updateDirectoryUser).toHaveBeenCalledWith(
@@ -136,7 +134,7 @@ it("saves profile, roles, and memberships transactionally", async () => {
     {
       email: "ada@example.test",
       name: "Ada Lovelace",
-      roles: ["reader", "tenant-reader"],
+      roles: ["reader", "source-reader"],
       isAdmin: true,
       disabled: false,
       teamIds: ["team-platform"],

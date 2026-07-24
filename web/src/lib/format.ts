@@ -9,6 +9,11 @@ interface ShareBundleOptions {
   rows: Record<string, unknown>[];
   mode: ResultMode;
   chartImageDataURL?: string;
+  include?: {
+    link: boolean;
+    query: boolean;
+    results: boolean;
+  };
 }
 
 export function orderedColumns(rows: Record<string, unknown>[], preferred: string[] = []): string[] {
@@ -140,37 +145,50 @@ function resultsHTML(rows: Record<string, unknown>[], mode: ResultMode, preferre
   return `<table style="border-collapse:collapse;border-spacing:0"><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
-export function shareBundle({ query, link, rows, mode, chartImageDataURL }: ShareBundleOptions): { text: string; html: string; truncated: boolean } {
+export function shareBundle({ query, link, rows, mode, chartImageDataURL, include }: ShareBundleOptions): { text: string; html: string; truncated: boolean } {
+  const selected = include ?? { link: true, query: true, results: true };
+  const standalone = Number(selected.link) + Number(selected.query) + Number(selected.results) === 1;
   const preferredColumns = columnsFromQuery(query);
-  const results = clipboardSelection(rows, mode, preferredColumns);
-  const chartImage = mode === "chart" && chartImageDataURL;
+  const results = selected.results
+    ? clipboardSelection(rows, mode, preferredColumns)
+    : { rows: [], text: "", truncated: false };
+  const chartImage = selected.results && mode === "chart" && chartImageDataURL;
   const resultLabel = chartImage
     ? `Chart (${rows.length.toLocaleString()} source rows):`
     : results.truncated ? `Results (excerpt of ${rows.length.toLocaleString()} rows):` : `Results (${rows.length.toLocaleString()} rows):`;
   const markdownResultLabel = chartImage
     ? `Chart source data: ${rows.length.toLocaleString()} rows`
     : results.truncated ? `Results: excerpt of ${rows.length.toLocaleString()} rows` : `Results: ${rows.length.toLocaleString()} rows`;
-  const safeLink = escapeHTML(link);
+  const safeLink = selected.link ? escapeHTML(link) : "";
   const richResultLabel = escapeHTML(resultLabel.slice(0, -1));
-  return {
-    text: [
-      `[Query](${markdownLinkTarget(link)})`,
-      "",
-      markdownCodeBlock(query, "logsql"),
-      "",
-      markdownResultLabel,
-      markdownCodeBlock(results.text, mode === "json" ? "json" : "tsv"),
-    ].join("\n"),
-    html: [
-      '<div style="color:#111827;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.5">',
-      `<p style="margin:0 0 8px"><a href="${safeLink}" style="color:#2563eb;font-weight:700;text-decoration:underline">[Query]</a></p>`,
-      `<a href="${safeLink}" style="color:inherit;text-decoration:none"><pre style="margin:0 0 14px;padding:12px;border:1px solid #d1d5db;border-radius:6px;background:#f8fafc;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere"><code>${highlightLogSQL(query)}</code></pre></a>`,
+  const text: string[] = [];
+  const html: string[] = ['<div style="color:#111827;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.5">'];
+  if (selected.link) {
+    const label = selected.query ? "Query" : "Open shared query";
+    text.push(standalone ? link : `[${label}](${markdownLinkTarget(link)})`);
+    html.push(`<p style="margin:0 0 8px"><a href="${safeLink}" style="color:#2563eb;font-weight:700;text-decoration:underline">[${label}]</a></p>`);
+  }
+  if (selected.query) {
+    if (text.length > 0) text.push("");
+    text.push(standalone ? query : markdownCodeBlock(query, "logsql"));
+    const queryHTML = `<pre style="margin:0 0 14px;padding:12px;border:1px solid #d1d5db;border-radius:6px;background:#f8fafc;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere"><code>${highlightLogSQL(query)}</code></pre>`;
+    html.push(selected.link ? `<a href="${safeLink}" style="color:inherit;text-decoration:none">${queryHTML}</a>` : queryHTML);
+  }
+  if (selected.results) {
+    if (text.length > 0) text.push("");
+    if (standalone) text.push(results.text);
+    else text.push(markdownResultLabel, markdownCodeBlock(results.text, mode === "json" ? "json" : "tsv"));
+    html.push(
       `<p style="margin:0 0 6px;color:#334155;font-weight:700">${richResultLabel}</p>`,
       chartImage
         ? `<img src="${escapeHTML(chartImage)}" alt="Rendered query chart" style="display:block;max-width:960px;width:100%;height:auto;border:1px solid #d1d5db;border-radius:6px;background:#fff" />`
         : resultsHTML(results.rows, mode, preferredColumns),
-      "</div>",
-    ].join(""),
+    );
+  }
+  html.push("</div>");
+  return {
+    text: text.join("\n"),
+    html: html.join(""),
     truncated: results.truncated,
   };
 }

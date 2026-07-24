@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { act, cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RenderDirective } from "../lib/logsql";
 import { ChartViewer } from "./ChartViewer";
 
@@ -13,6 +13,48 @@ function directive(visualization: string, properties: Record<string, string> = {
 }
 
 describe("ChartViewer", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("redraws the chart to match its available pane area", () => {
+    let resizeCallback: ResizeObserverCallback | undefined;
+    class ResizeObserverMock {
+      constructor(callback: ResizeObserverCallback) {
+        resizeCallback = callback;
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal("ResizeObserver", ResizeObserverMock);
+
+    const { container } = render(
+      <ChartViewer
+        directive={directive("linechart", { xcolumn: "minute", ycolumns: "requests" })}
+        rows={[
+          { minute: 1, requests: 10 },
+          { minute: 2, requests: 14 },
+        ]}
+      />,
+    );
+    const chartCanvas = container.querySelector(".chart-canvas");
+    const chart = screen.getByRole("img", { name: "linechart visualization" });
+    expect(chartCanvas).not.toBeNull();
+
+    act(() => {
+      resizeCallback?.(
+        [{ contentRect: { width: 720, height: 300 } } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+    });
+
+    expect(chart).toHaveAttribute("width", "720");
+    expect(chart).toHaveAttribute("height", "300");
+    expect(chart).toHaveAttribute("viewBox", "0 0 720 300");
+  });
+
   it("renders compact time ticks for a grouped timechart", () => {
     const { container } = render(
       <ChartViewer

@@ -32,7 +32,7 @@ type streamEvent struct {
 	Warning                 string         `json:"warning,omitempty"`
 }
 
-func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, tail bool) {
+func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	input, ok := decodeQueryRequest(w, r)
 	if !ok {
 		return
@@ -43,38 +43,26 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, tail bool)
 		return
 	}
 	user := auth.MustUser(r.Context())
-	source, tenant, allowed := s.authorize(user, input)
+	source, allowed := s.authorize(user, input)
 	if !allowed {
-		writeJSONError(w, http.StatusForbidden, "source or tenant is not available to this account")
+		writeJSONError(w, http.StatusForbidden, "source is not available to this account")
 		return
 	}
-	if !s.gate.acquire(user.Subject, tail) {
+	if !s.gate.acquire(user.Subject) {
 		writeJSONError(w, http.StatusTooManyRequests, "concurrent query limit reached")
 		return
 	}
-	defer s.gate.release(user.Subject, tail)
+	defer s.gate.release(user.Subject)
 
 	requestID := newRequestID()
 	started := time.Now()
-	upstreamCtx := r.Context()
-	cancel := func() {}
-	if !tail {
-		upstreamCtx, cancel = context.WithTimeout(r.Context(), s.cfg.Limits.QueryTimeout.Duration)
-	} else {
-		upstreamCtx, cancel = context.WithCancel(r.Context())
-	}
+	upstreamCtx, cancel := context.WithTimeout(r.Context(), s.cfg.Limits.QueryTimeout.Duration)
 	defer cancel()
-	endpoint := "/select/logsql/query"
-	if tail {
-		endpoint = "/select/logsql/tail"
-		s.metrics.tails.Add(1)
-	} else {
-		s.metrics.queries.Add(1)
-	}
+	s.metrics.queries.Add(1)
 	s.metrics.active.Add(1)
 	defer s.metrics.active.Add(-1)
 
-	response, err := s.vlogs.Do(upstreamCtx, victoria.Request{Source: source, Tenant: tenant, Endpoint: endpoint, Query: input.Query})
+	response, err := s.vlogs.Do(upstreamCtx, victoria.Request{Source: source, Endpoint: "/select/logsql/query", Query: input.Query})
 	if err != nil {
 		s.metrics.errors.Add(1)
 		status := http.StatusBadGateway
@@ -120,7 +108,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, tail bool)
 		if len(strings.TrimSpace(string(line))) == 0 {
 			continue
 		}
-		if !tail && (rows >= s.cfg.Limits.MaxRows || bytesRead+int64(len(line)) > s.cfg.Limits.MaxBytes) {
+		if rows >= s.cfg.Limits.MaxRows || bytesRead+int64(len(line)) > s.cfg.Limits.MaxBytes {
 			status, reason = "truncated", "viewer safety limit reached; narrow the query or add an explicit LogsQL limit"
 			s.metrics.truncated.Add(1)
 			cancel()
@@ -180,9 +168,9 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request, values b
 		return
 	}
 	user := auth.MustUser(r.Context())
-	source, tenant, allowed := s.authorize(user, input)
+	source, allowed := s.authorize(user, input)
 	if !allowed {
-		writeJSONError(w, http.StatusForbidden, "source or tenant is not available to this account")
+		writeJSONError(w, http.StatusForbidden, "source is not available to this account")
 		return
 	}
 	if values && hiddenField(input.Field, source.HiddenFields) {
@@ -195,7 +183,7 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request, values b
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.Limits.QueryTimeout.Duration)
 	defer cancel()
-	response, err := s.vlogs.Do(ctx, victoria.Request{Source: source, Tenant: tenant, Endpoint: endpoint, Query: input.Query, Field: input.Field})
+	response, err := s.vlogs.Do(ctx, victoria.Request{Source: source, Endpoint: endpoint, Query: input.Query, Field: input.Field})
 	if err != nil {
 		writeJSONError(w, http.StatusBadGateway, "VictoriaLogs metadata request failed")
 		return

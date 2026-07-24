@@ -3,12 +3,12 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirro
 import { HighlightStyle, StreamLanguage, syntaxHighlighting } from "@codemirror/language";
 import { linter } from "@codemirror/lint";
 import { EditorSelection, type Extension } from "@codemirror/state";
-import { EditorView, keymap } from "@codemirror/view";
+import { EditorView, highlightActiveLine, highlightActiveLineGutter, keymap } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 import CodeMirror from "@uiw/react-codemirror";
 import { forwardRef, useImperativeHandle, useMemo, useRef } from "react";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { hasTimeFilter } from "../lib/logsql";
+import { hasTimeFilter, queryAtCursor } from "../lib/logsql";
 
 export interface QueryEditorHandle {
   executableQuery(): string;
@@ -67,7 +67,9 @@ export const QueryEditor = forwardRef<QueryEditorHandle, Props>(function QueryEd
       const view = viewRef.current;
       if (!view) return value;
       const selection = view.state.selection.main;
-      return selection.empty ? view.state.doc.toString() : view.state.sliceDoc(selection.from, selection.to);
+      return selection.empty
+        ? queryAtCursor(view.state.doc.toString(), selection.anchor)
+        : view.state.sliceDoc(selection.from, selection.to);
     },
     focus: () => viewRef.current?.focus(),
   }), [value]);
@@ -85,13 +87,16 @@ export const QueryEditor = forwardRef<QueryEditorHandle, Props>(function QueryEd
       };
     };
     return [
+      ...(dark ? [oneDark] : []),
       language,
       highlights,
       history(),
       keymap.of([
         { key: "Shift-Enter", run: (view) => {
           const selection = view.state.selection.main;
-          onRun(selection.empty ? view.state.doc.toString() : view.state.sliceDoc(selection.from, selection.to));
+          onRun(selection.empty
+            ? queryAtCursor(view.state.doc.toString(), selection.anchor)
+            : view.state.sliceDoc(selection.from, selection.to));
           return true;
         } },
         indentWithTab,
@@ -106,22 +111,36 @@ export const QueryEditor = forwardRef<QueryEditorHandle, Props>(function QueryEd
         message: "Add an explicit _time: filter. Vesta never injects a hidden time range.",
       }]),
       EditorView.lineWrapping,
+      highlightActiveLine(),
+      highlightActiveLineGutter(),
       EditorView.theme({
-        "&": { height: "100%", background: "transparent" },
-        ".cm-scroller": { fontFamily: "var(--font-mono)", fontSize: "13px", lineHeight: "1.7" },
+        "&": { height: "100%", minHeight: "0", background: "transparent" },
+        ".cm-scroller": {
+          minHeight: "0",
+          overflow: "auto",
+          overscrollBehavior: "contain",
+          scrollbarColor: "var(--border-strong) transparent",
+          fontFamily: "var(--font-mono)",
+          fontSize: "13px",
+          lineHeight: "1.7",
+        },
         ".cm-content": { padding: "14px 8px" },
         ".cm-gutters": { background: "transparent", border: "none", color: "var(--text-faint)" },
-        ".cm-activeLine, .cm-activeLineGutter": { background: "var(--editor-active-line)" },
+        ".cm-activeLine": {
+          background: "var(--editor-active-line)",
+          boxShadow: "inset 3px 0 color-mix(in srgb, var(--brand) 65%, transparent)",
+        },
+        ".cm-activeLineGutter": { background: "var(--editor-active-line)", color: "var(--text)" },
         ".cm-selectionBackground, ::selection": { background: "var(--selection) !important" },
         ".cm-focused": { outline: "none" },
         ".cm-tooltip": { border: "1px solid var(--border)", background: "var(--surface-elevated)" },
       }),
-      ...(dark ? [oneDark] : []),
     ];
   }, [dark, fields, onRun]);
 
   return (
     <CodeMirror
+      className="query-editor"
       value={value}
       height="100%"
       extensions={extensions}
@@ -132,7 +151,7 @@ export const QueryEditor = forwardRef<QueryEditorHandle, Props>(function QueryEd
           update.view.dispatch({ selection: EditorSelection.cursor(update.state.doc.length) });
         }
       }}
-      basicSetup={{ lineNumbers: true, foldGutter: false, highlightActiveLine: true, autocompletion: false, lintKeymap: true }}
+      basicSetup={{ lineNumbers: true, foldGutter: false, highlightActiveLine: false, highlightActiveLineGutter: false, autocompletion: false, lintKeymap: true }}
     />
   );
 });

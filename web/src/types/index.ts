@@ -1,16 +1,9 @@
 export type ResultMode = "table" | "json" | "chart";
-export type RunStatus = "idle" | "running" | "tailing" | "complete" | "truncated" | "error" | "cancelled";
-
-export interface Tenant {
-  accountId: string;
-  projectId: string;
-  name: string;
-}
+export type RunStatus = "idle" | "running" | "complete" | "truncated" | "error" | "cancelled";
 
 export interface Source {
   id: string;
   name: string;
-  tenants: Tenant[];
 }
 
 export interface Session {
@@ -22,7 +15,6 @@ export interface Session {
     maxRows: number;
     maxBytes: number;
     maxQueries: number;
-    maxTails: number;
   };
 }
 
@@ -39,13 +31,11 @@ export interface ExplorerTab {
   id: string;
   title: string;
   sourceId: string;
-  tenant: Tenant;
   query: string;
   lastExecutedQuery: string;
   resultMode: ResultMode;
   status: RunStatus;
   rows: Record<string, unknown>[];
-  droppedRows: number;
   error?: string;
   warning?: string;
   stats?: RunStats;
@@ -53,13 +43,12 @@ export interface ExplorerTab {
   contextError?: string;
 }
 
-export type PersistedTab = Pick<ExplorerTab, "id" | "title" | "sourceId" | "tenant" | "query" | "lastExecutedQuery" | "resultMode" | "protected">;
+export type PersistedTab = Pick<ExplorerTab, "id" | "title" | "sourceId" | "query" | "lastExecutedQuery" | "resultMode" | "protected">;
 
 export interface HistoryEntry {
   id: string;
   query: string;
   sourceId: string;
-  tenant: Tenant;
   executedAt: number;
   status: RunStatus;
   elapsedMs?: number;
@@ -87,14 +76,8 @@ export interface FieldValue {
 export interface SharePayload {
   query: string;
   sourceId: string;
-  tenant: Tenant;
   title: string;
   resultMode: ResultMode;
-}
-
-export interface ShareAudience {
-  type: "user" | "team";
-  value: string;
 }
 
 export interface Team {
@@ -102,20 +85,22 @@ export interface Team {
   name: string;
 }
 
-export interface TeamQuery {
+export interface StarQuery {
   id: string;
-  teamId: string;
-  folderId?: string;
   title: string;
   query: string;
   sourceId: string;
-  tenantAccountId: string;
-  tenantProjectId: string;
-  tenantName: string;
   resultMode: ResultMode;
-  createdBy: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export type PersonalQuery = StarQuery;
+
+export interface TeamQuery extends StarQuery {
+  teamId: string;
+  folderId?: string;
+  createdBy: string;
 }
 
 export interface TeamFolder {
@@ -130,6 +115,11 @@ export interface TeamLibrary {
   team: Team;
   folders: TeamFolder[];
   queries: TeamQuery[];
+}
+
+export interface StarLibrary {
+  self: PersonalQuery[];
+  teams: TeamLibrary[];
 }
 
 export interface DirectoryUser {
@@ -148,18 +138,10 @@ export interface Directory {
   memberships: Array<{ userId: string; teamId: string }>;
 }
 
-export interface PermissionTenant {
-  accountId: string;
-  projectId: string;
-  name: string;
-  roles: string[];
-}
-
 export interface PermissionSource {
   id: string;
   name: string;
   roles: string[];
-  tenants: PermissionTenant[];
 }
 
 export interface PermissionCatalog {

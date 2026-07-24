@@ -11,9 +11,6 @@ describe("tabFromTeamStar", () => {
       title: "Recent errors",
       query: "_time:1h level:error",
       sourceId: "logs",
-      tenantAccountId: "1",
-      tenantProjectId: "2",
-      tenantName: "Production",
       resultMode: "json",
       createdBy: "user-1",
       createdAt: "2026-07-23T00:00:00Z",
@@ -24,13 +21,11 @@ describe("tabFromTeamStar", () => {
       id: "tab-copy",
       title: "Recent errors",
       sourceId: "logs",
-      tenant: { accountId: "1", projectId: "2", name: "Production" },
       query: "_time:1h level:error",
       lastExecutedQuery: "",
       resultMode: "json",
       status: "idle",
       rows: [],
-      droppedRows: 0,
     });
   });
 });

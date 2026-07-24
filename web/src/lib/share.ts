@@ -1,7 +1,7 @@
 const PREFIX = "#share=";
 const TOKEN = /^[A-Za-z0-9_-]{32}$/;
 
-export function privateShareURL(token: string, location: Pick<Location, "origin" | "pathname"> = window.location): string {
+export function shareURL(token: string, location: Pick<Location, "origin" | "pathname"> = window.location): string {
   return `${location.origin}${location.pathname}${PREFIX}${encodeURIComponent(token)}`;
 }
 

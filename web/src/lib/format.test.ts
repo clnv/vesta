@@ -23,7 +23,7 @@ it("copies chart source data as a table", () => {
   expect(text).toBe("_time\trequests\n2026-07-23T00:00:00Z\t12");
 });
 
-it("combines connection context, protected link, query, and results for sharing", () => {
+it("combines a share link, query, and results", () => {
   const bundle = shareBundle({
     query: "_time:1h error | limit 2",
     link: "https://logs.example.com/#share=protected",
@@ -37,7 +37,6 @@ it("combines connection context, protected link, query, and results for sharing"
   expect(bundle.truncated).toBe(false);
   expect(bundle.text).not.toContain("Vesta LogsQL share");
   expect(bundle.text).not.toContain("Source:");
-  expect(bundle.text).not.toContain("Tenant:");
   expect(bundle.text).toContain("[Query](https://logs.example.com/#share=protected)");
   expect(bundle.text).toContain("```logsql\n_time:1h error | limit 2\n```");
   expect(bundle.text).toContain("Results: 2 rows\n```tsv\n_time\t_msg");
@@ -64,6 +63,40 @@ it("embeds a rendered chart image in rich sharing with source data as the plain-
   expect(bundle.html).not.toContain("<table");
   expect(bundle.text).toContain("Chart source data: 1 rows");
   expect(bundle.text).toContain("level\tlogs\nerror\t12");
+});
+
+it("includes only the selected share content", () => {
+  const queryOnly = shareBundle({
+    query: "_time:1h error",
+    link: "",
+    rows: [{ level: "error" }],
+    mode: "table",
+    include: { link: false, query: true, results: false },
+  });
+  expect(queryOnly.text).toBe("_time:1h error");
+  expect(queryOnly.html).toContain("_time");
+  expect(queryOnly.html).not.toContain("<table");
+  expect(queryOnly.html).not.toContain("<a href=");
+
+  const linkAndResults = shareBundle({
+    query: "_time:1h error",
+    link: "https://logs.example.com/#share=system",
+    rows: [{ level: "error" }],
+    mode: "table",
+    include: { link: true, query: false, results: true },
+  });
+  expect(linkAndResults.text).toContain("[Open shared query](https://logs.example.com/#share=system)");
+  expect(linkAndResults.text).not.toContain("```logsql");
+  expect(linkAndResults.text).toContain("Results: 1 rows");
+
+  const linkOnly = shareBundle({
+    query: "_time:1h error",
+    link: "https://logs.example.com/#share=system",
+    rows: [],
+    mode: "table",
+    include: { link: true, query: false, results: false },
+  });
+  expect(linkOnly.text).toBe("https://logs.example.com/#share=system");
 });
 
 it("escapes untrusted query text while applying LogsQL highlighting", () => {

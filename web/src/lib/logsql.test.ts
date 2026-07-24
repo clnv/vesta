@@ -1,7 +1,80 @@
 import { describe, expect, it } from "vitest";
 import {
-  columnsFromQuery, hasTimeFilter, insertFilter, quoteLogSQLValue, renderDirectiveFromQuery,
+  columnsFromQuery, DEFAULT_QUERY, hasTimeFilter, insertFilter, queryAtCursor, quoteLogSQLValue,
+  renderDirectiveFromQuery,
 } from "./logsql";
+
+it("formats the starter query as a readable pipeline", () => {
+  expect(DEFAULT_QUERY).toBe("_time:1h\n| sort by (_time) desc\n| limit 200");
+});
+
+describe("queryAtCursor", () => {
+  it("returns the blank-line-delimited query under the cursor", () => {
+    const document = [
+      "_time:5m error",
+      "| limit 10",
+      "",
+      "_time:1h warning",
+      "| stats count()",
+    ].join("\n");
+
+    expect(queryAtCursor(document, document.indexOf("error"))).toBe("_time:5m error\n| limit 10");
+    expect(queryAtCursor(document, document.indexOf("warning"))).toBe("_time:1h warning\n| stats count()");
+  });
+
+  it("keeps pipeline continuations separated by blank lines in one query", () => {
+    const document = [
+      "_time:5m",
+      "",
+      "# aggregate the matching logs",
+      "| stats count()",
+      "",
+      "_time:1h warning",
+    ].join("\n");
+
+    expect(queryAtCursor(document, document.indexOf("stats"))).toBe([
+      "_time:5m",
+      "",
+      "# aggregate the matching logs",
+      "| stats count()",
+    ].join("\n"));
+  });
+
+  it("uses unquoted semicolons as explicit query terminators", () => {
+    const document = `_time:5m _msg:"first;value"; _time:1h warning;`;
+
+    expect(queryAtCursor(document, document.indexOf("first"))).toBe(`_time:5m _msg:"first;value"`);
+    expect(queryAtCursor(document, document.indexOf("warning"))).toBe("_time:1h warning");
+  });
+
+  it("supports mixing blank-line and semicolon terminators", () => {
+    const document = "_time:5m error\n\n_time:1h warning;\n\n_time:24h critical";
+
+    expect(queryAtCursor(document, document.indexOf("error"))).toBe("_time:5m error");
+    expect(queryAtCursor(document, document.indexOf("warning"))).toBe("_time:1h warning");
+    expect(queryAtCursor(document, document.indexOf("critical"))).toBe("_time:24h critical");
+  });
+
+  it("ignores semicolons in comments and backtick strings", () => {
+    const document = [
+      "_time:5m `first;value` # ignored;",
+      "| limit 10",
+      "",
+      "_time:1h warning",
+    ].join("\n");
+
+    expect(queryAtCursor(document, document.indexOf("limit"))).toBe([
+      "_time:5m `first;value` # ignored;",
+      "| limit 10",
+    ].join("\n"));
+    expect(queryAtCursor(document, document.indexOf("warning"))).toBe("_time:1h warning");
+  });
+
+  it("returns no query when the cursor is on a separator", () => {
+    const document = "_time:5m\n\n_time:1h";
+    expect(queryAtCursor(document, document.indexOf("\n\n") + 1)).toBe("");
+  });
+});
 
 describe("hasTimeFilter", () => {
   it.each([

@@ -22,8 +22,8 @@ func validProductionConfig(t *testing.T) *Config {
 		Storage: StorageConfig{Path: "/var/lib/vesta/vesta.db"},
 		Sources: []SourceConfig{{
 			ID: "prod", Name: "Production", URL: "https://victoria.example.test", Roles: []string{"reader"},
-			Tenants: []Tenant{{AccountID: "1", ProjectID: "2"}},
-			Auth:    UpstreamAuth{Type: "bearer", TokenEnv: "TEST_VESTA_TOKEN"}, HiddenFields: []string{"password*"},
+			AccountID: "1", ProjectID: "2",
+			Auth: UpstreamAuth{Type: "bearer", TokenEnv: "TEST_VESTA_TOKEN"}, HiddenFields: []string{"password*"},
 		}},
 	}
 }
@@ -67,6 +67,15 @@ func TestValidateLocalAuthenticationAndSources(t *testing.T) {
 		copy.Sources[0].HiddenFields = []string{"password*copy"}
 		if err := copy.Validate(); err == nil || !strings.Contains(err.Error(), "hidden field pattern") {
 			t.Fatalf("expected hidden field pattern error, got %v", err)
+		}
+	})
+
+	t.Run("partial upstream routing", func(t *testing.T) {
+		copy := *cfg
+		copy.Sources = append([]SourceConfig(nil), cfg.Sources...)
+		copy.Sources[0].ProjectID = ""
+		if err := copy.Validate(); err == nil || !strings.Contains(err.Error(), "account_id and project_id") {
+			t.Fatalf("expected paired routing fields error, got %v", err)
 		}
 	})
 

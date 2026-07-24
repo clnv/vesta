@@ -122,19 +122,27 @@ func (s *Store) initialize(ctx context.Context, persistent bool) error {
 			title TEXT NOT NULL,
 			query TEXT NOT NULL,
 			source_id TEXT NOT NULL,
-			tenant_account_id TEXT NOT NULL,
-			tenant_project_id TEXT NOT NULL,
-			tenant_name TEXT NOT NULL,
-			result_mode TEXT NOT NULL CHECK (result_mode IN ('table', 'json')),
+			result_mode TEXT NOT NULL CHECK (result_mode IN ('table', 'json', 'chart')),
 			created_by TEXT NOT NULL REFERENCES users(id),
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		) STRICT`,
 		`CREATE INDEX IF NOT EXISTS team_queries_team_folder_idx ON team_queries (team_id, folder_id, updated_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS personal_queries (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			title TEXT NOT NULL,
+			query TEXT NOT NULL,
+			source_id TEXT NOT NULL,
+			result_mode TEXT NOT NULL CHECK (result_mode IN ('table', 'json', 'chart')),
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		) STRICT`,
+		`CREATE INDEX IF NOT EXISTS personal_queries_user_idx ON personal_queries (user_id, updated_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS shares (
 			id TEXT PRIMARY KEY,
 			payload BLOB NOT NULL,
-			audience_type TEXT NOT NULL CHECK (audience_type IN ('user', 'team')),
+			audience_type TEXT NOT NULL CHECK (audience_type IN ('system', 'user', 'team')),
 			audience_value TEXT NOT NULL,
 			created_by TEXT NOT NULL,
 			created_at INTEGER NOT NULL,
@@ -147,6 +155,48 @@ func (s *Store) initialize(ctx context.Context, persistent bool) error {
 			return fmt.Errorf("initialize SQLite schema: %w", err)
 		}
 	}
+	if err := s.ensureSystemShareAudience(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) ensureSystemShareAudience(ctx context.Context) error {
+	var definition string
+	if err := s.db.QueryRowContext(ctx, "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'shares'").Scan(&definition); err != nil {
+		return fmt.Errorf("inspect shares schema: %w", err)
+	}
+	if strings.Contains(definition, "'system'") {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin shares migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, statement := range []string{
+		"ALTER TABLE shares RENAME TO shares_legacy",
+		`CREATE TABLE shares (
+			id TEXT PRIMARY KEY,
+			payload BLOB NOT NULL,
+			audience_type TEXT NOT NULL CHECK (audience_type IN ('system', 'user', 'team')),
+			audience_value TEXT NOT NULL,
+			created_by TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL
+		) STRICT`,
+		`INSERT INTO shares (id, payload, audience_type, audience_value, created_by, created_at, expires_at)
+		 SELECT id, payload, audience_type, audience_value, created_by, created_at, expires_at FROM shares_legacy`,
+		"DROP TABLE shares_legacy",
+		"CREATE INDEX shares_expires_at_idx ON shares (expires_at)",
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("migrate shares schema: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit shares migration: %w", err)
+	}
 	return nil
 }
 
@@ -154,7 +204,7 @@ func (s *Store) CreateShare(ctx context.Context, share Share) (string, error) {
 	if len(share.Payload) == 0 || share.AudienceValue == "" || share.CreatedBy == "" || share.ExpiresAt.IsZero() {
 		return "", errors.New("share record is incomplete")
 	}
-	if share.AudienceType != "user" && share.AudienceType != "team" {
+	if share.AudienceType != "system" && share.AudienceType != "user" && share.AudienceType != "team" {
 		return "", errors.New("share audience is invalid")
 	}
 	if share.CreatedAt.IsZero() {
