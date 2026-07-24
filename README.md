@@ -98,6 +98,7 @@ GitHub Actions configuration lives under [`.github/workflows`](.github/workflows
 - `CI` checks workflow syntax, Go formatting/module integrity/vet/race tests/coverage, reachable Go vulnerabilities, web tests and production builds, strict Helm linting and render variants, chart packaging, Dockerfile checks, the pinned VictoriaLogs integration suite, and the final container UID.
 - `CodeQL` analyzes Go and TypeScript on `main`, pull requests, manual runs, and a weekly schedule.
 - `Publish container images` publishes AMD64 images as `ghcr.io/<owner>/<repository>-web` and `ghcr.io/<owner>/<repository>-api` from `master`, version tags, and manual runs. Version tags also produce semantic-version tags, while the default branch publishes `latest`.
+- `Publish Helm chart` is manually triggered and publishes the chart version declared in `charts/vesta/Chart.yaml` as `ghcr.io/<owner>/charts/vesta:<version>`.
 - [Dependabot](.github/dependabot.yml) groups weekly npm, Go module, Docker, and GitHub Actions updates.
 
 Actions are pinned to immutable commit SHAs with their release versions documented inline. CI has read-only repository permissions by default, with `security-events: write` granted only to CodeQL.
