@@ -4,7 +4,7 @@ api:
   image:
     repository: ghcr.io/clnv/vesta-api
     pullPolicy: IfNotPresent
-    tag: "0.0.1"
+    tag: "0.0.3"
   resources:
     requests:
       cpu: 100m
@@ -39,7 +39,7 @@ web:
   image:
     repository: ghcr.io/clnv/vesta-web
     pullPolicy: IfNotPresent
-    tag: "0.0.1"
+    tag: "0.0.3"
   resources:
     requests:
       cpu: 25m
