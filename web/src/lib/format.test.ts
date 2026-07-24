@@ -23,6 +23,24 @@ it("copies chart source data as a table", () => {
   expect(text).toBe("_time\trequests\n2026-07-23T00:00:00Z\t12");
 });
 
+it("keeps hidden result fields out of exports and shares", () => {
+  const rows = [{ _time: "0", file: "app.log", metadata: "secret", _msg: "ready" }];
+  const csv = formatRows(rows, "table", "csv", ["_time", "file", "_msg"], ["file", "meta*"]);
+  expect(csv).toBe("_time,_msg\n0,ready");
+
+  const bundle = shareBundle({
+    query: "_time:1h | fields _time, file, _msg",
+    link: "",
+    rows,
+    mode: "json",
+    hiddenResultFields: ["file", "meta*"],
+    include: { link: false, query: false, results: true },
+  });
+  expect(bundle.text).toBe('{"_time":"0","_msg":"ready"}');
+  expect(bundle.html).not.toContain("app.log");
+  expect(bundle.html).not.toContain("secret");
+});
+
 it("combines a share link, query, and results", () => {
   const bundle = shareBundle({
     query: "_time:1h error | limit 2",

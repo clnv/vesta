@@ -51,62 +51,17 @@ function statementTerminators(document: string): number[] {
 }
 
 function blankLineQueryRanges(document: string, from: number, to: number): QueryRange[] {
-  const paragraphs: QueryRange[] = [];
+  const ranges: QueryRange[] = [];
   const separator = /\n[ \t\r]*\n+/g;
   const segment = document.slice(from, to);
-  let paragraphFrom = from;
+  let rangeFrom = from;
   for (const match of segment.matchAll(separator)) {
     const separatorFrom = from + match.index;
-    addTrimmedRange(paragraphs, document, paragraphFrom, separatorFrom);
-    paragraphFrom = separatorFrom + match[0].length;
+    addTrimmedRange(ranges, document, rangeFrom, separatorFrom);
+    rangeFrom = separatorFrom + match[0].length;
   }
-  addTrimmedRange(paragraphs, document, paragraphFrom, to);
-  if (paragraphs.length < 2) return paragraphs;
-
-  const ranges: QueryRange[] = [];
-  for (const paragraph of paragraphs) {
-    const current = ranges.at(-1);
-    if (current && continuesQuery(document.slice(paragraph.from, paragraph.to), document.slice(current.from, current.to))) {
-      current.to = paragraph.to;
-    } else {
-      ranges.push({ ...paragraph });
-    }
-  }
+  addTrimmedRange(ranges, document, rangeFrom, to);
   return ranges;
-}
-
-function continuesQuery(next: string, previous: string): boolean {
-  const firstCodeLine = next.split("\n").find((line) => {
-    const trimmed = line.trim();
-    return trimmed && !trimmed.startsWith("#");
-  })?.trim() ?? "";
-  if (!firstCodeLine) return true;
-  if (/^(?:\||and\b|or\b|[)\]}])/i.test(firstCodeLine)) return true;
-  if (/[|,]$/.test(previous.trimEnd())) return true;
-  return unclosedGroupDepth(previous) > 0;
-}
-
-function unclosedGroupDepth(query: string): number {
-  let depth = 0;
-  let quote = "";
-  let comment = false;
-  for (let index = 0; index < query.length; index += 1) {
-    const char = query[index];
-    if (comment) {
-      if (char === "\n") comment = false;
-      continue;
-    }
-    if (quote) {
-      if (char === "\\" && quote !== "`") index += 1;
-      else if (char === quote) quote = "";
-      continue;
-    }
-    if (char === "#") comment = true;
-    else if (char === '"' || char === "'" || char === "`") quote = char;
-    else if (char === "(" || char === "[" || char === "{") depth += 1;
-    else if (char === ")" || char === "]" || char === "}") depth = Math.max(0, depth - 1);
-  }
-  return depth;
 }
 
 function addTrimmedRange(ranges: QueryRange[], document: string, from: number, to: number): void {

@@ -62,7 +62,9 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	s.metrics.active.Add(1)
 	defer s.metrics.active.Add(-1)
 
-	response, err := s.vlogs.Do(upstreamCtx, victoria.Request{Source: source, Endpoint: "/select/logsql/query", Query: input.Query})
+	resultSource := source
+	resultSource.HiddenFields = append(append([]string{}, source.HiddenFields...), user.HiddenResultFields...)
+	response, err := s.vlogs.Do(upstreamCtx, victoria.Request{Source: resultSource, Endpoint: "/select/logsql/query", Query: input.Query})
 	if err != nil {
 		s.metrics.errors.Add(1)
 		status := http.StatusBadGateway
@@ -121,7 +123,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			cancel()
 			break
 		}
-		redactHiddenFields(row, source.HiddenFields)
+		redactHiddenFields(row, resultSource.HiddenFields)
 		rows++
 		bytesRead += int64(len(line))
 		if err := encoder.Encode(streamEvent{Type: "row", Row: row}); err != nil {

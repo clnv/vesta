@@ -170,7 +170,7 @@ func TestQueryForwardsOnlyQuerySemantics(t *testing.T) {
 		capture.mu.Unlock()
 		w.Header().Set("VL-Request-Duration-Seconds", "0.004")
 		w.Header().Set("Content-Type", "application/x-ndjson")
-		_, _ = io.WriteString(w, "{\"_time\":\"2026-07-22T12:00:00Z\",\"_msg\":\"one\",\"password_hash\":\"secret\"}\n{\"_time\":\"2026-07-22T12:00:01Z\",\"_msg\":\"two\"}\n")
+		_, _ = io.WriteString(w, "{\"_time\":\"2026-07-22T12:00:00Z\",\"_msg\":\"one\",\"file\":\"app.log\",\"timestamp\":\"legacy\",\"password_hash\":\"secret\"}\n{\"_time\":\"2026-07-22T12:00:01Z\",\"_msg\":\"two\"}\n")
 	}))
 	defer upstream.Close()
 
@@ -197,7 +197,7 @@ func TestQueryForwardsOnlyQuerySemantics(t *testing.T) {
 			t.Fatalf("unexpected upstream parameter %q", forbidden)
 		}
 	}
-	if len(capture.form) != 2 || capture.form.Get("hidden_fields_filters") != `["password*","authorization"]` {
+	if len(capture.form) != 2 || capture.form.Get("hidden_fields_filters") != `["password*","authorization","_stream","_stream_id","file","stream","timestamp"]` {
 		t.Fatalf("normal query form contains unexpected semantics: %v", capture.form)
 	}
 	if capture.headers.Get("AccountID") != "12" || capture.headers.Get("ProjectID") != "34" {
@@ -218,6 +218,12 @@ func TestQueryForwardsOnlyQuerySemantics(t *testing.T) {
 	}
 	if _, leaked := events[1].Row["password_hash"]; leaked {
 		t.Fatal("hidden field reached the browser")
+	}
+	if _, leaked := events[1].Row["file"]; leaked {
+		t.Fatal("user-hidden file field reached the browser")
+	}
+	if _, leaked := events[1].Row["timestamp"]; leaked {
+		t.Fatal("user-hidden timestamp field reached the browser")
 	}
 }
 
@@ -410,6 +416,78 @@ func TestSessionReturnsOnlyAuthorizedContexts(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), `"id":"prod"`) || strings.Contains(recorder.Body.String(), `"accountId"`) {
 		t.Fatalf("missing authorized source: %s", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"hiddenResultFields":["_stream","_stream_id","file","stream","timestamp"]`) {
+		t.Fatalf("missing default user settings: %s", recorder.Body.String())
+	}
+}
+
+func TestResultFieldSettingsArePerUser(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = io.WriteString(w, `{"_msg":"ready","file":"app.log","trace_id":"abc","trace_parent":"root"}`+"\n")
+	}))
+	defer upstream.Close()
+	runtime := newTestRuntime(t, upstream.URL, config.LimitsConfig{})
+	admin := runtime.client(t, "tester@example.test", "correct-horse-battery")
+	member, err := runtime.store.CreateUser(t.Context(), storage.CreateUserInput{
+		Email: "member@example.test", Name: "Member", Password: "member-secure-password",
+		Roles: []string{"reader"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberClient := runtime.client(t, member.Email, "member-secure-password")
+
+	update := httptest.NewRequest(http.MethodPut, "/api/v1/account/settings", strings.NewReader(
+		`{"hiddenResultFields":[" trace* ","trace*"]}`,
+	))
+	update.Header.Set("X-CSRF-Token", "vesta-development-csrf")
+	updateRecorder := httptest.NewRecorder()
+	admin.ServeHTTP(updateRecorder, update)
+	if updateRecorder.Code != http.StatusOK ||
+		!strings.Contains(updateRecorder.Body.String(), `"hiddenResultFields":["trace*"]`) {
+		t.Fatalf("settings update status=%d body=%s", updateRecorder.Code, updateRecorder.Body.String())
+	}
+
+	queryRow := func(client http.Handler) map[string]any {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/query", queryBody("_time:1h"))
+		request.Header.Set("X-CSRF-Token", "vesta-development-csrf")
+		recorder := httptest.NewRecorder()
+		client.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("query status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+		scanner := bufio.NewScanner(strings.NewReader(recorder.Body.String()))
+		for scanner.Scan() {
+			var event streamEvent
+			if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+				t.Fatal(err)
+			}
+			if event.Type == "row" {
+				return event.Row
+			}
+		}
+		t.Fatalf("query returned no row: %s", recorder.Body.String())
+		return nil
+	}
+
+	adminRow := queryRow(admin)
+	if adminRow["file"] != "app.log" || adminRow["trace_id"] != nil || adminRow["trace_parent"] != nil {
+		t.Fatalf("custom settings were not applied: %#v", adminRow)
+	}
+	memberRow := queryRow(memberClient)
+	if memberRow["file"] != nil || memberRow["trace_id"] != "abc" || memberRow["trace_parent"] != "root" {
+		t.Fatalf("member did not retain independent defaults: %#v", memberRow)
+	}
+
+	sessionRequest := httptest.NewRequest(http.MethodGet, "/api/v1/session", nil)
+	sessionRecorder := httptest.NewRecorder()
+	admin.ServeHTTP(sessionRecorder, sessionRequest)
+	if sessionRecorder.Code != http.StatusOK ||
+		!strings.Contains(sessionRecorder.Body.String(), `"hiddenResultFields":["trace*"]`) {
+		t.Fatalf("updated session settings status=%d body=%s", sessionRecorder.Code, sessionRecorder.Body.String())
 	}
 }
 

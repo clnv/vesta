@@ -1,6 +1,6 @@
 import {
-  Braces, ChartNoAxesCombined, ChevronDown, CircleStop, Copy, Download, FileJson, History, KeyRound, LogOut,
-  LockKeyhole, Moon, Play, Share2, Star, Sun, Table2, Users, X,
+  Braces, ChartNoAxesCombined, ChevronDown, CircleStop, Copy, Download, EyeOff, FileJson, History, KeyRound,
+  LockKeyhole, LogOut, Moon, Play, Share2, Star, Sun, Table2, Users, X,
 } from "lucide-react";
 import type { CSSProperties, FormEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -8,6 +8,7 @@ import { AccessManagementPage } from "./components/AccessManagementPage";
 import { FolderDialog } from "./components/FolderDialog";
 import { PasswordPanel } from "./components/PasswordPanel";
 import { QueryEditor, type QueryEditorHandle } from "./components/QueryEditor";
+import { ResultSettingsPanel } from "./components/ResultSettingsPanel";
 import { ResultViewer } from "./components/ResultViewer";
 import { Sidebar } from "./components/Sidebar";
 import { TabBar } from "./components/TabBar";
@@ -139,6 +140,7 @@ export default function App() {
   const [folderCreating, setFolderCreating] = useState(false);
   const [folderCreateError, setFolderCreateError] = useState("");
   const [passwordOpen, setPasswordOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [route, setRoute] = useState<AppRoute>(currentRoute);
@@ -507,6 +509,7 @@ export default function App() {
       link,
       rows: activeTab.rows,
       mode: activeTab.resultMode,
+      hiddenResultFields: session.user.settings.hiddenResultFields,
       chartImageDataURL: chartImage ? await blobToDataURL(chartImage) : undefined,
       include: shareParts,
     });
@@ -535,8 +538,14 @@ export default function App() {
   };
 
   const download = (format: "csv" | "ndjson") => {
-    if (!activeTab || activeTab.rows.length === 0) return;
-    const text = formatRows(activeTab.rows, activeTab.resultMode, format, columnsFromQuery(activeTab.lastExecutedQuery || activeTab.query));
+    if (!activeTab || !session || activeTab.rows.length === 0) return;
+    const text = formatRows(
+      activeTab.rows,
+      activeTab.resultMode,
+      format,
+      columnsFromQuery(activeTab.lastExecutedQuery || activeTab.query),
+      session.user.settings.hiddenResultFields,
+    );
     const url = URL.createObjectURL(new Blob([text], { type: format === "csv" ? "text/csv" : "application/x-ndjson" }));
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -1001,6 +1010,21 @@ export default function App() {
                 <button className={activeTab.resultMode === "table" ? "active" : ""} onClick={() => updateTab(activeTab.id, { resultMode: "table" })}><Table2 size={14} /> Table</button>
                 <button className={activeTab.resultMode === "json" ? "active" : ""} onClick={() => updateTab(activeTab.id, { resultMode: "json" })}><Braces size={14} /> JSON</button>
               </div>
+              <button
+                className={`result-field-settings ${session.user.settings.hiddenResultFields.length > 0 ? "active" : ""}`}
+                aria-label={`Edit hidden result fields (${session.user.settings.hiddenResultFields.length} hidden)`}
+                title="Choose fields to hide from query results"
+                onClick={() => {
+                  setSettingsOpen(true);
+                  setShareOpen(false);
+                  setStarOpen(false);
+                  setExportOpen(false);
+                }}
+              >
+                <EyeOff size={13} />
+                <span>Hidden fields</span>
+                <strong>{session.user.settings.hiddenResultFields.length}</strong>
+              </button>
               <div className="result-stats" aria-live="polite">
                 {stale && <span className="stale-badge">Query changed since run</span>}
                 <span className={`run-state ${activeTab.status}`}>{running && <i />} {activeTab.status}</span>
@@ -1016,6 +1040,7 @@ export default function App() {
               mode={activeTab.resultMode}
               query={activeTab.lastExecutedQuery || activeTab.query}
               visualization={activeVisualization}
+              hiddenResultFields={session.user.settings.hiddenResultFields}
               onCopy={(value) => void copyText(value, "Value copied")}
             />
           </div>
@@ -1033,6 +1058,17 @@ export default function App() {
         />
       )}
       {passwordOpen && <PasswordPanel csrfToken={session.csrfToken} onClose={() => setPasswordOpen(false)} onMessage={setToast} />}
+      {settingsOpen && (
+        <ResultSettingsPanel
+          settings={session.user.settings}
+          csrfToken={session.csrfToken}
+          onClose={() => setSettingsOpen(false)}
+          onMessage={setToast}
+          onSaved={(settings) => setSessionState((current) => current.kind === "ready"
+            ? { kind: "ready", session: { ...current.session, user: { ...current.session.user, settings } } }
+            : current)}
+        />
+      )}
     </div>
   );
 }

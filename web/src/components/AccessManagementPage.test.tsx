@@ -23,6 +23,7 @@ const session: Session = {
     name: "Ada Admin",
     isAdmin: true,
     teams: [{ id: "team-platform", name: "Platform" }],
+    settings: { hiddenResultFields: ["_stream", "_stream_id", "file", "stream", "timestamp"] },
   },
   sources: [],
   csrfToken: "csrf-token",

@@ -1,5 +1,6 @@
 import type { ResultMode } from "../types";
 import { columnsFromQuery } from "./logsql";
+import { filterResultRows, isHiddenResultField } from "./resultFields";
 
 const MAX_CLIPBOARD_BYTES = 5 << 20;
 
@@ -9,6 +10,7 @@ interface ShareBundleOptions {
   rows: Record<string, unknown>[];
   mode: ResultMode;
   chartImageDataURL?: string;
+  hiddenResultFields?: string[];
   include?: {
     link: boolean;
     query: boolean;
@@ -43,7 +45,10 @@ export function formatRows(
   mode: ResultMode,
   format: "clipboard" | "csv" | "ndjson" = "clipboard",
   preferredColumns: string[] = [],
+  hiddenResultFields: string[] = [],
 ): string {
+  rows = filterResultRows(rows, hiddenResultFields);
+  preferredColumns = preferredColumns.filter((column) => !isHiddenResultField(column, hiddenResultFields));
   if (format === "ndjson" || (format === "clipboard" && mode === "json")) {
     return rows.map((row) => JSON.stringify(row)).join("\n");
   }
@@ -57,9 +62,12 @@ function clipboardSelection(
   rows: Record<string, unknown>[],
   mode: ResultMode,
   preferredColumns: string[] = [],
+  hiddenResultFields: string[] = [],
 ): { rows: Record<string, unknown>[]; text: string; truncated: boolean } {
+  rows = filterResultRows(rows, hiddenResultFields);
+  preferredColumns = preferredColumns.filter((column) => !isHiddenResultField(column, hiddenResultFields));
   const encoder = new TextEncoder();
-  const text = formatRows(rows, mode, "clipboard", preferredColumns);
+  const text = formatRows(rows, mode, "clipboard", preferredColumns, hiddenResultFields);
   if (encoder.encode(text).byteLength <= MAX_CLIPBOARD_BYTES) {
     return { rows, text, truncated: false };
   }
@@ -67,15 +75,20 @@ function clipboardSelection(
   let high = rows.length;
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    if (encoder.encode(formatRows(rows.slice(0, middle), mode, "clipboard", preferredColumns)).byteLength <= MAX_CLIPBOARD_BYTES) low = middle;
+    if (encoder.encode(formatRows(rows.slice(0, middle), mode, "clipboard", preferredColumns, hiddenResultFields)).byteLength <= MAX_CLIPBOARD_BYTES) low = middle;
     else high = middle - 1;
   }
   const selectedRows = rows.slice(0, low);
-  return { rows: selectedRows, text: formatRows(selectedRows, mode, "clipboard", preferredColumns), truncated: true };
+  return { rows: selectedRows, text: formatRows(selectedRows, mode, "clipboard", preferredColumns, hiddenResultFields), truncated: true };
 }
 
-export function clipboardRows(rows: Record<string, unknown>[], mode: ResultMode, preferredColumns: string[] = []): { text: string; truncated: boolean } {
-  const selection = clipboardSelection(rows, mode, preferredColumns);
+export function clipboardRows(
+  rows: Record<string, unknown>[],
+  mode: ResultMode,
+  preferredColumns: string[] = [],
+  hiddenResultFields: string[] = [],
+): { text: string; truncated: boolean } {
+  const selection = clipboardSelection(rows, mode, preferredColumns, hiddenResultFields);
   return { text: selection.text, truncated: selection.truncated };
 }
 
@@ -134,7 +147,14 @@ function htmlCell(value: unknown): string {
   return escapeHTML(typeof value === "string" ? value : JSON.stringify(value));
 }
 
-function resultsHTML(rows: Record<string, unknown>[], mode: ResultMode, preferredColumns: string[] = []): string {
+function resultsHTML(
+  rows: Record<string, unknown>[],
+  mode: ResultMode,
+  preferredColumns: string[] = [],
+  hiddenResultFields: string[] = [],
+): string {
+  rows = filterResultRows(rows, hiddenResultFields);
+  preferredColumns = preferredColumns.filter((column) => !isHiddenResultField(column, hiddenResultFields));
   if (mode === "json") {
     const ndjson = rows.map((row) => JSON.stringify(row)).join("\n");
     return `<pre style="margin:0;padding:12px;border:1px solid #d1d5db;border-radius:6px;background:#f8fafc;color:#111827;font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere">${escapeHTML(ndjson)}</pre>`;
@@ -145,12 +165,14 @@ function resultsHTML(rows: Record<string, unknown>[], mode: ResultMode, preferre
   return `<table style="border-collapse:collapse;border-spacing:0"><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
-export function shareBundle({ query, link, rows, mode, chartImageDataURL, include }: ShareBundleOptions): { text: string; html: string; truncated: boolean } {
+export function shareBundle({
+  query, link, rows, mode, chartImageDataURL, hiddenResultFields = [], include,
+}: ShareBundleOptions): { text: string; html: string; truncated: boolean } {
   const selected = include ?? { link: true, query: true, results: true };
   const standalone = Number(selected.link) + Number(selected.query) + Number(selected.results) === 1;
   const preferredColumns = columnsFromQuery(query);
   const results = selected.results
-    ? clipboardSelection(rows, mode, preferredColumns)
+    ? clipboardSelection(rows, mode, preferredColumns, hiddenResultFields)
     : { rows: [], text: "", truncated: false };
   const chartImage = selected.results && mode === "chart" && chartImageDataURL;
   const resultLabel = chartImage
@@ -182,7 +204,7 @@ export function shareBundle({ query, link, rows, mode, chartImageDataURL, includ
       `<p style="margin:0 0 6px;color:#334155;font-weight:700">${richResultLabel}</p>`,
       chartImage
         ? `<img src="${escapeHTML(chartImage)}" alt="Rendered query chart" style="display:block;max-width:960px;width:100%;height:auto;border:1px solid #d1d5db;border-radius:6px;background:#fff" />`
-        : resultsHTML(results.rows, mode, preferredColumns),
+        : resultsHTML(results.rows, mode, preferredColumns, hiddenResultFields),
     );
   }
   html.push("</div>");

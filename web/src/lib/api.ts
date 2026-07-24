@@ -1,7 +1,7 @@
 import type {
   Directory, DirectoryUser, FieldValue, PermissionCatalog, PersonalQuery, Session, SharePayload,
   StarLibrary, Team, TeamFolder, TeamQuery, StreamEvent,
-  UpdateDirectoryUserInput,
+  UpdateDirectoryUserInput, UserSettings,
 } from "../types";
 
 export class APIError extends Error {
@@ -160,6 +160,13 @@ export async function changePassword(currentPassword: string, newPassword: strin
     body: JSON.stringify({ currentPassword, newPassword }),
   });
   if (!response.ok) throw new APIError(await parseError(response), response.status);
+}
+
+export async function updateUserSettings(
+  hiddenResultFields: string[],
+  csrfToken: string,
+): Promise<UserSettings> {
+  return putJSON("/api/v1/account/settings", { hiddenResultFields }, csrfToken);
 }
 
 export interface QueryInput { sourceId: string; query: string; field?: string }

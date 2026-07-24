@@ -35,7 +35,7 @@ Start from `config.production.example.yml` and configure:
 - The bootstrap user’s roles and source roles. Access remains default-deny.
 - Each VictoriaLogs/vmauth credential through environment variables.
 - Optional `account_id` and `project_id` values on a source when its upstream requires those routing headers. Each source represents one selectable log context.
-- `storage.path`, the SQLite database used for users, password hashes, teams, memberships, folders, personal and team stars, and share links. `storage.share_ttl` controls expiring links.
+- `storage.path`, the SQLite database used for users, password hashes, per-user settings, teams, memberships, folders, personal and team stars, and share links. `storage.share_ttl` controls expiring links.
 
 Generate a session secret with:
 
@@ -48,10 +48,11 @@ Passwords are hashed with bcrypt before storage. Administrators can open `/admin
 ## Query behavior
 
 - `Shift+Enter` runs the current selection, or the query under the cursor when there is no selection. Separate queries with a blank line or a terminal `;`.
-- Main queries are POSTed to `/select/logsql/query` with the LogsQL `query` value and source-configured routing/auth headers. The only server-added query parameter is an optional, administrator-fixed `hidden_fields_filters` security policy; Vesta also recursively redacts those fields at its response boundary and blocks their metadata calls.
+- Main queries are POSTed to `/select/logsql/query` with the LogsQL `query` value and source-configured routing/auth headers. The only server-added query parameter is an optional `hidden_fields_filters` list composed of the administrator-fixed source policy and the current user’s hidden-result preference. Vesta also recursively redacts both at its response boundary; source-policy fields additionally remain blocked from metadata calls.
 - A terminal Kusto-style `render` stage is interpreted by Vesta and removed before the LogsQL query is sent upstream. Supported visualizations are `timechart`, `linechart`, `areachart`, `stackedareachart`, `columnchart`, `barchart`, `piechart`, `scatterchart`, `anomalychart`, and `card`, plus `render table`. Common `with (...)` properties include `title`, `xcolumn`, `ycolumns`, `series`, `xtitle`, `ytitle`, `legend`, `kind`, `ymin`, and `ymax`.
 - Queries without a real `_time:` filter are rejected in both the editor and API. Text inside strings and `#` comments does not count.
 - The viewer stops at 50,000 rows, 32 MiB, or 30 seconds by default. Truncation is always visible and cancels the upstream request.
+- Every account initially hides `_stream`, `_stream_id`, `file`, `stream`, and `timestamp` from result rows. The result-pane **Hidden fields** control shows the active count and lets each user edit their own exact field names or trailing-`*` prefixes; source-level hidden-field security policy still takes precedence.
 - Tabs and the last 100 query texts are saved in IndexedDB. Result rows are never persisted.
 - Query links use random opaque IDs backed by SQLite and expire automatically. Any signed-in user can open a link, while source authorization is always checked again before the query is shown or run.
 - Every user has a personal star collection stored in SQLite and visible only to that user. Team members can also star queries into a shared library and organize them into team folders. Opening any star creates an editable copy in a new tab and never executes it automatically; personal stars can only be renamed by their owner, while any current team member can rename a team star or move it to another folder.

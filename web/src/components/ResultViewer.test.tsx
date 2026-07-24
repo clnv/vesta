@@ -41,6 +41,29 @@ it("orders table headers by the query fields stage and appends unexpected fields
     .toEqual(["_time", "level", "_msg", "trace_id"]);
 });
 
+it("hides preferred fields from table and expanded JSON results", () => {
+  const onCopy = vi.fn();
+  const { container } = render(
+    <ResultViewer
+      mode="table"
+      query={"_time:1h | fields _time, file, _msg"}
+      hiddenResultFields={["file", "meta*"]}
+      onCopy={onCopy}
+      rows={[{ _time: "0", file: "app.log", metadata: "secret", _msg: "hello" }]}
+    />,
+  );
+  const view = within(container);
+
+  expect([...container.querySelectorAll(".table-header-cell > span")].map((header) => header.textContent))
+    .toEqual(["_time", "_msg"]);
+  fireEvent.click(view.getByRole("button", { name: "Expand row 1 JSON" }));
+  expect(container.querySelector(".table-row-json")).not.toHaveTextContent("app.log");
+  expect(container.querySelector(".table-row-json")).not.toHaveTextContent("secret");
+
+  fireEvent.click(view.getByRole("button", { name: "Copy row 1 full JSON" }));
+  expect(onCopy).toHaveBeenCalledWith(JSON.stringify({ _time: "0", _msg: "hello" }, null, 2));
+});
+
 it("highlights entire error and warning rows", () => {
   const { container } = render(
     <ResultViewer
