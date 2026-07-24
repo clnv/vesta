@@ -1,0 +1,53 @@
+name: Publish Helm chart
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-helm-chart-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  CHART_PATH: charts/vesta
+
+jobs:
+  publish:
+    name: Package and publish chart
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Helm
+        uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.3
+
+      - name: Lint chart
+        run: helm lint --strict "$CHART_PATH"
+
+      - name: Package chart
+        run: |
+          mkdir -p dist
+          helm package "$CHART_PATH" --destination dist
+
+      - name: Log in to GitHub Container Registry
+        env:
+          HELM_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          printf '%s' "$HELM_REGISTRY_PASSWORD"
+          | helm registry login "$REGISTRY"
+          --username "$GITHUB_ACTOR"
+          --password-stdin
+
+      - name: Publish chart
+        shell: bash
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          helm push dist/*.tgz "oci://${REGISTRY}/${owner}/charts"
