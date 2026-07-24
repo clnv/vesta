@@ -1,5 +1,9 @@
 Vesta has been installed as {{ include "vesta.fullname" . }}.
 
+Retrieve the bootstrap password with:
+
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "vesta.secretName" . }} -o jsonpath='{.data.VESTA_BOOTSTRAP_PASSWORD}' | base64 --decode; echo
+
 {{- if .Values.ingress.enabled }}
 Open:
 {{- range .Values.ingress.hosts }}

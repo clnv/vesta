@@ -85,11 +85,10 @@ The chart in [`charts/vesta`](charts/vesta) deploys the `vesta-web` and `vesta-a
 ```sh
 helm upgrade --install vesta ./charts/vesta \
   --namespace vesta \
-  --create-namespace \
-  --values ./charts/vesta/values-production.example.yaml
+  --create-namespace
 ```
 
-Use [`charts/vesta/README.md`](charts/vesta/README.md) for secret creation, local installation, and production value guidance. The default chart values contain explicitly development-only bootstrap credentials and keep Ingress disabled; production deployments should start from `values-production.example.yaml`.
+Use [`charts/vesta/README.md`](charts/vesta/README.md) for installation, subchart configuration, and the required or optional status of each value. The chart generates a random session secret and bootstrap password by default.
 
 ## Continuous integration
 

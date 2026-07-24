@@ -161,14 +161,12 @@ config:
         hidden_fields: []
 
 secret:
-  # Prefer existingSecret in production. Its keys are exposed to Vesta as env vars.
+  # Set this only when credentials are managed outside this chart.
   existingSecret: ""
-  # Development-only defaults so a local Helm install can sign in immediately.
+  # Generates the session secret and bootstrap password when they are omitted from data.
   create: true
   annotations: {}
-  data:
-    VESTA_SESSION_SECRET: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
-    VESTA_BOOTSTRAP_PASSWORD: "vesta-local-password"
+  data: {}
 
 extraEnv: []
 extraEnvFrom: []

@@ -1,6 +1,9 @@
 {{- if and .Values.secret.create .Values.secret.existingSecret }}
 {{- fail "secret.create and secret.existingSecret are mutually exclusive" }}
 {{- end }}
+{{- if and (not .Values.secret.create) (not .Values.secret.existingSecret) }}
+{{- fail "set secret.existingSecret or enable secret.create" }}
+{{- end }}
 {{- if .Values.autoscaling.enabled }}
 {{- fail "autoscaling is not supported with the local SQLite user directory" }}
 {{- end }}
@@ -37,7 +40,7 @@ spec:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         {{- end }}
         {{- if and .Values.secret.create (not .Values.secret.existingSecret) }}
-        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        checksum/secret: {{ toJson .Values.secret.data | sha256sum }}
         {{- end }}
       {{- end }}
       labels:

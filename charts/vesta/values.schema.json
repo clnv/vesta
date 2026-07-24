@@ -28,6 +28,10 @@
     }
   },
   "properties": {
+    "global": {
+      "description": "Values shared by a parent chart. Helm injects this reserved object into subcharts.",
+      "type": "object"
+    },
     "replicaCount": { "type": "integer", "minimum": 1 },
     "api": { "$ref": "#/definitions/component" },
     "web": { "$ref": "#/definitions/component" },
