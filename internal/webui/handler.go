@@ -1,12 +1,17 @@
 package webui
 
 import (
+	"bytes"
+	"crypto/rand"
+	"encoding/base64"
 	"io/fs"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
 )
+
+const cspNoncePlaceholder = "__VESTA_CSP_NONCE__"
 
 // NewHandler serves the embedded SPA and proxies same-origin application
 // routes to the API.
@@ -57,6 +62,13 @@ func staticHandler() http.Handler {
 			http.Error(w, "web build is unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		nonce, err := newCSPNonce()
+		if err != nil {
+			http.Error(w, "web security initialization failed", http.StatusInternalServerError)
+			return
+		}
+		index = bytes.ReplaceAll(index, []byte(cspNoncePlaceholder), []byte(nonce))
+		w.Header().Set("Content-Security-Policy", contentSecurityPolicy(nonce))
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write(index)
@@ -65,10 +77,26 @@ func staticHandler() http.Handler {
 
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'")
+		w.Header().Set("Content-Security-Policy", contentSecurityPolicy(""))
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		next.ServeHTTP(w, r)
 	})
+}
+
+func newCSPNonce() (string, error) {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	return base64.RawStdEncoding.EncodeToString(value), nil
+}
+
+func contentSecurityPolicy(nonce string) string {
+	styleSource := "style-src 'self'"
+	if nonce != "" {
+		styleSource += " 'nonce-" + nonce + "'"
+	}
+	return "default-src 'self'; connect-src 'self'; img-src 'self' data:; " + styleSource + "; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
 }

@@ -62,6 +62,7 @@ const keywords = [
 
 export const QueryEditor = forwardRef<QueryEditorHandle, Props>(function QueryEditor({ value, fields, dark, onChange, onRun }, ref) {
   const viewRef = useRef<EditorView | null>(null);
+  const cspNonce = document.querySelector<HTMLMetaElement>('meta[name="csp-nonce"]')?.content;
   useImperativeHandle(ref, () => ({
     executableQuery: () => {
       const view = viewRef.current;
@@ -87,6 +88,7 @@ export const QueryEditor = forwardRef<QueryEditorHandle, Props>(function QueryEd
       };
     };
     return [
+      ...(cspNonce && cspNonce !== "__VESTA_CSP_NONCE__" ? [EditorView.cspNonce.of(cspNonce)] : []),
       ...(dark ? [oneDark] : []),
       language,
       highlights,
@@ -136,7 +138,7 @@ export const QueryEditor = forwardRef<QueryEditorHandle, Props>(function QueryEd
         ".cm-tooltip": { border: "1px solid var(--border)", background: "var(--surface-elevated)" },
       }),
     ];
-  }, [dark, fields, onRun]);
+  }, [cspNonce, dark, fields, onRun]);
 
   return (
     <CodeMirror
