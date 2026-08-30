@@ -1,4 +1,4 @@
-FROM node:26.5-trixie AS web-assets
+FROM node:26.8-trixie AS web-assets
 WORKDIR /src
 COPY package.json package-lock.json ./
 RUN npm ci
