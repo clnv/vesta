@@ -5,7 +5,7 @@ RUN npm ci
 COPY web ./web
 RUN npm run build
 
-FROM golang:1.26.5-trixie AS build
+FROM golang:1.27.1-trixie AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
